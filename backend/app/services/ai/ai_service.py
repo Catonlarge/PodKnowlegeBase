@@ -12,7 +12,10 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Optional, Dict
 
 # Google GenAI SDK
-from google import genai
+try:
+    from google import genai
+except ImportError:
+    import google.generativeai as genai
 # OpenAI SDK (通用兼容客户端)
 from openai import OpenAI
 

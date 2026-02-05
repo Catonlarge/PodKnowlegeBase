@@ -10,5 +10,6 @@ from app.services.segmentation_service import SegmentationService
 from app.services.translation_service import TranslationService
 from app.services.obsidian_service import ObsidianService
 from app.services.marketing_service import MarketingService
+from app.services.subtitle_proofreading_service import SubtitleProofreadingService
 
-__all__ = ["TranscriptionService", "WhisperService", "DownloadService", "SegmentationService", "TranslationService", "ObsidianService", "MarketingService"]
+__all__ = ["TranscriptionService", "WhisperService", "DownloadService", "SegmentationService", "TranslationService", "ObsidianService", "MarketingService", "SubtitleProofreadingService"]
