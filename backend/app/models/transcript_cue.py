@@ -3,7 +3,7 @@ TranscriptCue Model
 
 Represents a single subtitle cue (English text) with timing.
 """
-from sqlalchemy import Float, ForeignKey, Integer, String, Text, Index
+from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -23,7 +23,9 @@ class TranscriptCue(Base, TimestampMixin):
         start_time: Absolute time from original audio (seconds)
         end_time: Absolute time from original audio (seconds)
         speaker: Speaker identifier
-        text: English subtitle text
+        text: Original English subtitle text from Whisper
+        corrected_text: LLM-corrected text (if any)
+        is_corrected: Whether the cue has been corrected
     """
 
     __tablename__ = "transcript_cues"
@@ -69,18 +71,35 @@ class TranscriptCue(Base, TimestampMixin):
     text: Mapped[str] = mapped_column(
         Text,
         nullable=False,
-        doc="English subtitle text"
+        doc="Original English subtitle text from Whisper"
+    )
+    corrected_text: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        doc="LLM-corrected text (if proofreading has been applied)"
+    )
+    is_corrected: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        doc="Whether this cue has been corrected by LLM"
     )
 
     # Relationships
     segment = relationship("AudioSegment", back_populates="transcript_cues")
     chapter = relationship("Chapter", back_populates="transcript_cues")
     translations = relationship("Translation", back_populates="cue", cascade="all, delete-orphan")
+    transcript_corrections = relationship(
+        "TranscriptCorrection",
+        back_populates="cue",
+        cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_segment_id", "segment_id"),
         Index("idx_cue_chapter", "chapter_id"),
         Index("idx_cue_start_time", "segment_id", "start_time"),
+        Index("idx_cue_is_corrected", "is_corrected"),
     )
 
     @property
@@ -97,6 +116,18 @@ class TranscriptCue(Base, TimestampMixin):
     def episode(self) -> "Episode | None":
         """Get episode object through segment."""
         return self.segment.episode if self.segment else None
+
+    @property
+    def effective_text(self) -> str:
+        """
+        Get the effective text to use.
+
+        Returns corrected_text if is_corrected=True, otherwise returns original text.
+
+        Returns:
+            str: The effective text (corrected or original)
+        """
+        return self.corrected_text if self.is_corrected else self.text
 
     def get_translation(self, language_code: str = "zh") -> str | None:
         """
@@ -142,6 +173,6 @@ class TranscriptCue(Base, TimestampMixin):
         return f"[{time_str}](cue://{self.id})"
 
     def __repr__(self) -> str:
-        # Create a preview of the text (first 20 chars)
-        text_preview = self.text[:20] + "..." if len(self.text) > 20 else self.text
+        # Create a preview of the effective text (first 20 chars)
+        text_preview = self.effective_text[:20] + "..." if len(self.effective_text) > 20 else self.effective_text
         return f"<TranscriptCue(id={self.id}, text='{text_preview}')>"

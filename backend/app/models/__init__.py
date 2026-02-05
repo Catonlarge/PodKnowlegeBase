@@ -14,6 +14,7 @@ from app.models.chapter import Chapter
 from app.models.marketing_post import MarketingPost
 from app.models.publication_record import PublicationRecord
 from app.models.translation_correction import TranslationCorrection
+from app.models.transcript_correction import TranscriptCorrection
 
 __all__ = [
     "Base",
@@ -26,4 +27,5 @@ __all__ = [
     "MarketingPost",
     "PublicationRecord",
     "TranslationCorrection",
+    "TranscriptCorrection",
 ]

@@ -3,7 +3,8 @@ Episode Model
 
 Represents a podcast episode with metadata and workflow status.
 """
-from sqlalchemy import Float, Integer, String, Text, Index
+from datetime import datetime
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -25,7 +26,9 @@ class Episode(Base, TimestampMixin):
         duration: Duration in seconds
         language: Language code (default: 'en-US')
         ai_summary: AI-generated full summary
-        workflow_status: Workflow status (0-6)
+        workflow_status: Workflow status (0-7)
+        proofread_status: Subtitle proofreading status
+        proofread_at: Timestamp when proofreading was completed
 
     Note: Relationships to other models will be added after those models are created.
     """
@@ -69,7 +72,20 @@ class Episode(Base, TimestampMixin):
         nullable=False,
         default=WorkflowStatus.INIT.value,
         index=True,
-        doc="Workflow status (0-6)"
+        doc="Workflow status (0-7)"
+    )
+
+    # Subtitle proofreading status
+    proofread_status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="pending",
+        doc="Subtitle proofreading status: pending/in_progress/completed"
+    )
+    proofread_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+        doc="Timestamp when subtitle proofreading was completed"
     )
 
     # Relationships
@@ -82,6 +98,7 @@ class Episode(Base, TimestampMixin):
     __table_args__ = (
         Index("idx_episodes_file_hash", "file_hash", unique=True),
         Index("idx_episodes_workflow_status", "workflow_status"),
+        Index("idx_episodes_proofread_status", "proofread_status"),
     )
 
     def __repr__(self) -> str:

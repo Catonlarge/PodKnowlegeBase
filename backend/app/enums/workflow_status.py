@@ -1,7 +1,7 @@
 """
 Workflow Status Enumeration
 
-Defines the 7-state workflow for Episode processing.
+Defines the 8-state workflow for Episode processing.
 """
 from enum import IntEnum
 
@@ -14,19 +14,21 @@ class WorkflowStatus(IntEnum):
     0. INIT - URL recorded in database
     1. DOWNLOADED - Audio file downloaded locally
     2. TRANSCRIBED - WhisperX transcription completed
-    3. SEGMENTED - AI semantic chapter segmentation completed
-    4. TRANSLATED - All translations completed
-    5. READY_FOR_REVIEW - Obsidian document generated
-    6. PUBLISHED - Distributed to platforms
+    3. PROOFREAD - LLM subtitle proofreading completed
+    4. SEGMENTED - AI semantic chapter segmentation completed
+    5. TRANSLATED - All translations completed
+    6. READY_FOR_REVIEW - Obsidian document generated
+    7. PUBLISHED - Distributed to platforms
     """
 
     INIT = 0
     DOWNLOADED = 1
     TRANSCRIBED = 2
-    SEGMENTED = 3
-    TRANSLATED = 4
-    READY_FOR_REVIEW = 5
-    PUBLISHED = 6
+    PROOFREAD = 3
+    SEGMENTED = 4
+    TRANSLATED = 5
+    READY_FOR_REVIEW = 6
+    PUBLISHED = 7
 
     def get_next_status(self) -> "WorkflowStatus":
         """
@@ -52,9 +54,10 @@ class WorkflowStatus(IntEnum):
             0: "已初始化",
             1: "已下载",
             2: "已转录",
-            3: "已分章",
-            4: "已翻译",
-            5: "待审核",
-            6: "已发布",
+            3: "已校对",
+            4: "已分章",
+            5: "已翻译",
+            6: "待审核",
+            7: "已发布",
         }
         return labels.get(self.value, "未知状态")
