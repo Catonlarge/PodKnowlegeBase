@@ -9,5 +9,6 @@ from app.services.download_service import DownloadService
 from app.services.segmentation_service import SegmentationService
 from app.services.translation_service import TranslationService
 from app.services.obsidian_service import ObsidianService
+from app.services.marketing_service import MarketingService
 
-__all__ = ["TranscriptionService", "WhisperService", "DownloadService", "SegmentationService", "TranslationService", "ObsidianService"]
+__all__ = ["TranscriptionService", "WhisperService", "DownloadService", "SegmentationService", "TranslationService", "ObsidianService", "MarketingService"]
