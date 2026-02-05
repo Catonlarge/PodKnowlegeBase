@@ -41,3 +41,5 @@ Thumbs.db
 # ==================== Test Artifacts ====================
 MagicMock/
 *Mock*/
+# ==================== Runtime Data ====================
+data/

@@ -13,10 +13,13 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from sqlalchemy.orm import Session
+from openai import OpenAI
 
 from app.models import Episode, MarketingPost, TranscriptCue, AudioSegment
+from app.config import MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL, AI_QUERY_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +153,67 @@ class MarketingService:
         Returns:
             List[str]: 标题列表
         """
-        # TODO: 集成实际的 LLM 服务
-        # 当前返回模拟数据用于测试
+        # 如果有配置 API Key，使用真实 AI 服务
+        if MOONSHOT_API_KEY and MOONSHOT_API_KEY != "your_api_key_here":
+            try:
+                client = OpenAI(
+                    api_key=MOONSHOT_API_KEY,
+                    base_url=MOONSHOT_BASE_URL
+                )
+
+                system_prompt = """你是一位专业的小红书营销文案专家。
+请根据播客内容生成吸引人的小红书标题。
+
+要求：
+1. 生成 {count} 个不同的标题
+2. 每个标题要包含 emoji 表情
+3. 标题要吸引眼球，符合小红书风格
+4. 标题长度控制在 30 字以内
+5. 直接返回标题列表，每行一个，不要有其他内容
+
+输出格式：
+标题1
+标题2
+标题3
+...""".format(count=count)
+
+                user_prompt = f"""播客标题：{episode.title}
+播客摘要：{episode.ai_summary or '暂无摘要'}
+
+请根据以上内容生成 {count} 个小红书标题："""
+
+                executor = ThreadPoolExecutor(max_workers=1)
+
+                def call_ai():
+                    completion = client.chat.completions.create(
+                        model=MOONSHOT_MODEL,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.8,
+                    )
+                    return completion.choices[0].message.content
+
+                try:
+                    future = executor.submit(call_ai)
+                    response_text = future.result(timeout=AI_QUERY_TIMEOUT)
+                    executor.shutdown(wait=False)
+
+                    # 解析返回的标题列表
+                    titles = [line.strip() for line in response_text.split('\n') if line.strip()]
+                    return titles[:count]
+
+                except FutureTimeoutError:
+                    logger.error("AI 标题生成超时，使用备用方案")
+                    executor.shutdown(wait=False)
+                except Exception as e:
+                    logger.error(f"AI 标题生成失败: {e}，使用备用方案")
+
+            except Exception as e:
+                logger.error(f"AI 标题生成初始化失败: {e}，使用备用方案")
+
+        # 备用方案：返回模拟数据
         titles = [
             f"🎯 {episode.title}",
             f"💡 关于{episode.title}的思考",
@@ -204,8 +266,65 @@ class MarketingService:
         Returns:
             List[str]: 标签列表
         """
-        # TODO: 集成实际的 LLM 服务
-        # 当前返回模拟数据用于测试
+        # 如果有配置 API Key，使用真实 AI 服务
+        if MOONSHOT_API_KEY and MOONSHOT_API_KEY != "your_api_key_here":
+            try:
+                client = OpenAI(
+                    api_key=MOONSHOT_API_KEY,
+                    base_url=MOONSHOT_BASE_URL
+                )
+
+                system_prompt = f"""你是一位专业的小红书营销文案专家。
+请根据播客内容生成相关的话题标签。
+
+要求：
+1. 生成 {max_tags} 个相关标签
+2. 每个标签必须以 # 开头
+3. 标签要与内容相关，符合小红书热门话题
+4. 标签用空格分隔，不要有换行
+5. 不要有其他解释文字
+
+输出格式：
+#标签1 #标签2 #标签3 #标签4 #标签5 ..."""
+
+                user_prompt = f"""播客标题：{episode.title}
+播客摘要：{episode.ai_summary or '暂无摘要'}
+
+请根据以上内容生成 {max_tags} 个相关标签："""
+
+                executor = ThreadPoolExecutor(max_workers=1)
+
+                def call_ai():
+                    completion = client.chat.completions.create(
+                        model=MOONSHOT_MODEL,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.7,
+                    )
+                    return completion.choices[0].message.content
+
+                try:
+                    future = executor.submit(call_ai)
+                    response_text = future.result(timeout=AI_QUERY_TIMEOUT)
+                    executor.shutdown(wait=False)
+
+                    # 解析返回的标签列表
+                    # 查找所有以 # 开头的标签
+                    hashtags = re.findall(r'#[\w\u4e00-\u9fff]+', response_text)
+                    return hashtags[:max_tags]
+
+                except FutureTimeoutError:
+                    logger.error("AI 标签生成超时，使用备用方案")
+                    executor.shutdown(wait=False)
+                except Exception as e:
+                    logger.error(f"AI 标签生成失败: {e}，使用备用方案")
+
+            except Exception as e:
+                logger.error(f"AI 标签生成初始化失败: {e}，使用备用方案")
+
+        # 备用方案：返回通用标签
         tags = [
             "#学习干货",
             "#知识分享",
@@ -289,8 +408,84 @@ class MarketingService:
         Returns:
             str: 小红书风格正文
         """
-        # TODO: 集成实际的 LLM 服务
-        # 当前返回模拟数据用于测试
+        # 如果有配置 API Key，使用真实 AI 服务
+        if MOONSHOT_API_KEY and MOONSHOT_API_KEY != "your_api_key_here":
+            try:
+                client = OpenAI(
+                    api_key=MOONSHOT_API_KEY,
+                    base_url=MOONSHOT_BASE_URL
+                )
+
+                # 格式化金句引用
+                quotes_text = ""
+                if key_quotes:
+                    quotes_text = "\n".join([f"• {quote[:100]}..." if len(quote) > 100 else f"• {quote}" for quote in key_quotes[:3]])
+
+                system_prompt = """你是一位专业的小红书营销文案专家。
+请根据播客内容生成小红书风格的文章正文。
+
+要求：
+1. 使用"宝子们"开头，亲切自然的语气
+2. 使用大量 emoji 表情（✅、💡、🔥、✨等）
+3. 内容分段清晰，使用项目符号
+4. 突出"干货"和"价值"
+5. 结尾要有 CTA（点赞收藏关注）
+6. 字数控制在 300-500 字
+7. 不要使用 Markdown 格式（不要有 ## 标题等）
+
+风格参考：
+宝子们！今天分享一个超赞的发现！
+
+✅ 核心观点1
+详细说明...
+
+✅ 核心观点2
+详细说明...
+
+💡 重点提示
+金句引用...
+
+真的太有用了！强烈推荐大家也去了解一下！
+
+点赞收藏关注我，不错过更多干货！"""
+
+                user_prompt = f"""播客标题：{episode.title}
+播客摘要：{episode.ai_summary or '暂无摘要'}
+
+核心金句：
+{quotes_text if quotes_text else '暂无'}
+
+请根据以上内容生成小红书风格的文章正文："""
+
+                executor = ThreadPoolExecutor(max_workers=1)
+
+                def call_ai():
+                    completion = client.chat.completions.create(
+                        model=MOONSHOT_MODEL,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        temperature=0.8,
+                    )
+                    return completion.choices[0].message.content
+
+                try:
+                    future = executor.submit(call_ai)
+                    response_text = future.result(timeout=AI_QUERY_TIMEOUT)
+                    executor.shutdown(wait=False)
+                    return response_text.strip()
+
+                except FutureTimeoutError:
+                    logger.error("AI 内容生成超时，使用备用方案")
+                    executor.shutdown(wait=False)
+                except Exception as e:
+                    logger.error(f"AI 内容生成失败: {e}，使用备用方案")
+
+            except Exception as e:
+                logger.error(f"AI 内容生成初始化失败: {e}，使用备用方案")
+
+        # 备用方案：返回模拟数据
         content = f"""宝子们！今天分享一个超赞的发现！
 
 关于 {episode.title}，我有一些心得想和大家分享...
