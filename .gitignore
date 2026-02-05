@@ -37,6 +37,9 @@ config.yaml
 # ==================== Documentation (Local Only) ====================
 docs/
 
+# ==================== Obsidian Vault (User Data) ====================
+obsidian/
+
 # ==================== OS ====================
 .DS_Store
 Thumbs.db
