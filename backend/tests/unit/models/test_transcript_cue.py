@@ -487,3 +487,191 @@ class TestTranscriptCueRepr:
         assert "TranscriptCue" in result
         assert f"id={cue.id}" in result
         assert "This is a" in result  # Text preview
+
+
+class TestTranscriptCueObsidianAnchor:
+    """Test TranscriptCue obsidian_anchor property."""
+
+    def test_obsidian_anchor_less_than_hour(self, test_session):
+        """Given: TranscriptCue (id=1, start_time=65.5)
+        When: Calling obsidian_anchor
+        Then: Returns "[01:05](cue://1)"
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=30.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            id=1,  # Set specific ID for testing
+            segment_id=segment.id,
+            start_time=65.5,
+            end_time=70.0,
+            text="Test text",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        result = cue.obsidian_anchor
+
+        assert result == "[01:05](cue://1)"
+
+    def test_obsidian_anchor_more_than_hour(self, test_session):
+        """Given: TranscriptCue (id=2, start_time=3665.0)
+        When: Calling obsidian_anchor
+        Then: Returns "[01:01:05](cue://2)"
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=5000.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=5000.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            id=2,  # Set specific ID for testing
+            segment_id=segment.id,
+            start_time=3665.0,
+            end_time=3670.0,
+            text="Test text",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        result = cue.obsidian_anchor
+
+        assert result == "[01:01:05](cue://2)"
+
+    def test_obsidian_anchor_zero_seconds(self, test_session):
+        """Given: TranscriptCue (id=3, start_time=0.0)
+        When: Calling obsidian_anchor
+        Then: Returns "[00:00](cue://3)"
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=30.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            id=3,  # Set specific ID for testing
+            segment_id=segment.id,
+            start_time=0.0,
+            end_time=3.0,
+            text="Test text",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        result = cue.obsidian_anchor
+
+        assert result == "[00:00](cue://3)"
+
+    def test_obsidian_anchor_truncates_seconds(self, test_session):
+        """Given: TranscriptCue (start_time=125.9)
+        When: Calling obsidian_anchor
+        Then: Returns "[02:05](cue://N)" - seconds are truncated, not rounded
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=200.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=200.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=125.9,
+            end_time=130.0,
+            text="Test text",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        result = cue.obsidian_anchor
+
+        # Should truncate to 02:05, not round to 02:06
+        assert result == f"[02:05](cue://{cue.id})"
+
+    def test_obsidian_anchor_exactly_one_hour(self, test_session):
+        """Given: TranscriptCue (start_time=3600.0)
+        When: Calling obsidian_anchor
+        Then: Returns "[01:00:00](cue://N)"
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=4000.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=4000.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=3600.0,
+            end_time=3605.0,
+            text="Test text",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        result = cue.obsidian_anchor
+
+        assert result == f"[01:00:00](cue://{cue.id})"

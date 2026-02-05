@@ -113,6 +113,34 @@ class TranscriptCue(Base, TimestampMixin):
                 return t.translation
         return None
 
+    @property
+    def obsidian_anchor(self) -> str:
+        """
+        Generate Obsidian invisible anchor for linking.
+
+        Creates a markdown link with time display and cue://ID reference.
+        Format: [MM:SS](cue://ID) or [HH:MM:SS](cue://ID) for content >= 1 hour
+
+        Returns:
+            str: Obsidian markdown anchor link
+
+        Examples:
+            start_time=65.5, id=1 -> "[01:05](cue://1)"
+            start_time=3665.0, id=2 -> "[01:01:05](cue://2)"
+        """
+        total_seconds = int(self.start_time)
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+
+        if minutes >= 60:
+            hours = minutes // 60
+            minutes = minutes % 60
+            time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            time_str = f"{minutes:02d}:{seconds:02d}"
+
+        return f"[{time_str}](cue://{self.id})"
+
     def __repr__(self) -> str:
         # Create a preview of the text (first 20 chars)
         text_preview = self.text[:20] + "..." if len(self.text) > 20 else self.text

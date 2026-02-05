@@ -123,10 +123,12 @@ class SegmentationService:
         )
 
         logger.info(f"开始章节切分: episode_id={episode_id}, cues数量={len(cues)}")
-        ai_response = self.ai_service.query(prompt)
+
+        # 直接调用 OpenAI 兼容 API（绕过 AIService 的 word/phrase/sentence 解析）
+        response_text = self._call_ai_for_segmentation(prompt)
 
         # 解析 AI 响应
-        chapters_data = self._parse_ai_response(json.dumps(ai_response))
+        chapters_data = self._parse_ai_response(response_text)
 
         # 创建 Chapter 记录
         chapters = self._create_chapters(episode_id, chapters_data)
@@ -270,6 +272,56 @@ class SegmentationService:
                 cue.chapter_id = chapters[-1].id
 
         self.db.flush()
+
+    def _call_ai_for_segmentation(self, prompt: str) -> str:
+        """
+        直接调用 AI API 进行章节切分（返回原始文本）
+
+        Args:
+            prompt: 提示词
+
+        Returns:
+            str: AI 返回的原始文本
+
+        Raises:
+            RuntimeError: AI 调用失败
+        """
+        from openai import OpenAI
+        from app.config import MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL, AI_QUERY_TIMEOUT
+
+        if not MOONSHOT_API_KEY:
+            raise ValueError("MOONSHOT_API_KEY 未设置")
+
+        try:
+            client = OpenAI(
+                api_key=MOONSHOT_API_KEY,
+                base_url=MOONSHOT_BASE_URL
+            )
+
+            logger.info(f"调用 Moonshot API 进行章节切分 (model={MOONSHOT_MODEL})")
+
+            completion = client.chat.completions.create(
+                model=MOONSHOT_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是一个专业的音频内容分析师，擅长进行语义章节划分。"
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.3,
+            )
+
+            response_text = completion.choices[0].message.content
+            logger.info(f"AI 响应长度: {len(response_text)} 字符")
+            return response_text
+
+        except Exception as e:
+            logger.error(f"AI 调用失败: {e}")
+            raise RuntimeError(f"章节切分 AI 调用失败: {e}") from e
 
     def _update_episode_status(self, episode_id: int) -> None:
         """
