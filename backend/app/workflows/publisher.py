@@ -226,7 +226,7 @@ class WorkflowPublisher:
                 records.append(record)
 
                 status = "成功" if record.status == "success" else "失败"
-                self.console.print(f"    {status}: {record.platform_name}")
+                self.console.print(f"    {status}: {record.platform}")
 
             except Exception as e:
                 self.console.print(f"    失败: {str(e)}")
@@ -234,7 +234,7 @@ class WorkflowPublisher:
                 # Create failure record
                 record = PublicationRecord(
                     episode_id=episode.id,
-                    platform_name=platform_name,
+                    platform=platform_name,
                     status="failed",
                     error_message=str(e)
                 )
@@ -271,7 +271,7 @@ class WorkflowPublisher:
             status_style = "green" if record.status == "success" else "red"
             status_text = "成功" if record.status == "success" else "失败"
             table.add_row(
-                record.platform_name,
+                record.platform,
                 f"[{status_style}]{status_text}[/{status_style}]",
                 record.error_message or ""
             )
