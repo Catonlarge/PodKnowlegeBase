@@ -19,22 +19,22 @@ from app.enums.workflow_status import WorkflowStatus
 class TestDownloadServiceInit:
     """Test DownloadService initialization."""
 
-    @patch('app.services.download_service.Path')
-    def test_init_creates_storage_directory(self, mock_path, test_session):
-        """Given: A test session
+    @patch('app.services.download_service.AUDIO_STORAGE_PATH')
+    def test_init_creates_storage_directory(self, mock_storage_path, test_session, tmp_path):
+        """Given: A test session with temporary storage path
         When: Initializing DownloadService
         Then: Creates storage directory if not exists
         """
         # Arrange
-        mock_path_obj = MagicMock()
-        mock_path.return_value = mock_path_obj
-        mock_path_obj.__truediv__ = MagicMock(return_value=mock_path_obj)
+        mock_storage_path.__str__ = lambda self: str(tmp_path)
+        mock_storage_path.__fspath__ = lambda self: str(tmp_path)
 
         # Act
         service = DownloadService(test_session)
 
         # Assert
-        mock_path_obj.mkdir.assert_called_once_with(parents=True, exist_ok=True)
+        assert service.storage_path.exists()
+        assert service.storage_path == tmp_path
 
 
 class TestDownloadServiceCheckDuplicate:

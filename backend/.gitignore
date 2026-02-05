@@ -37,3 +37,7 @@ config.yaml
 # ==================== OS ====================
 .DS_Store
 Thumbs.db
+
+# ==================== Test Artifacts ====================
+MagicMock/
+*Mock*/
