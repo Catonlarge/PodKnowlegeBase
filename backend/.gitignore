@@ -1,0 +1,39 @@
+# ==================== Python ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+venv-kb/
+env/
+ENV/
+
+# ==================== Database ====================
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# ==================== Logs ====================
+logs/
+*.log
+
+# ==================== AI Model Cache ====================
+data/transcript/
+data/temp_segments/
+
+# ==================== Configuration Files (Sensitive) ====================
+.env
+.env.local
+config.yaml
+
+# ==================== IDE ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==================== OS ====================
+.DS_Store
+Thumbs.db
