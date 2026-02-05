@@ -675,3 +675,186 @@ class TestTranscriptCueObsidianAnchor:
         result = cue.obsidian_anchor
 
         assert result == f"[01:00:00](cue://{cue.id})"
+
+
+class TestTranscriptCueCorrectionFields:
+    """Test TranscriptCue correction-related fields."""
+
+    def test_is_corrected_default_is_false(self, test_session):
+        """Given: New TranscriptCue
+        When: Not specifying is_corrected
+        Then: Defaults to False
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=30.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=0.0,
+            end_time=3.0,
+            text="Test text",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        assert cue.is_corrected is False
+        assert cue.corrected_text is None
+
+    def test_effective_text_returns_original_when_not_corrected(self, test_session):
+        """Given: TranscriptCue with is_corrected=False
+        When: Accessing effective_text
+        Then: Returns original text
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=30.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=0.0,
+            end_time=3.0,
+            text="Helo world",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        assert cue.effective_text == "Helo world"
+
+    def test_effective_text_returns_corrected_when_corrected(self, test_session):
+        """Given: TranscriptCue with is_corrected=True and corrected_text
+        When: Accessing effective_text
+        Then: Returns corrected text
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=30.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=0.0,
+            end_time=3.0,
+            text="Helo world",
+            corrected_text="Hello world",
+            is_corrected=True,
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        assert cue.effective_text == "Hello world"
+        assert cue.text == "Helo world"  # Original unchanged
+
+    def test_corrected_text_nullable(self, test_session):
+        """Given: TranscriptCue without corrected_text
+        When: Creating cue
+        Then: corrected_text can be None
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=30.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=0.0,
+            end_time=3.0,
+            text="Test text",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        assert cue.corrected_text is None
+
+    def test_repr_shows_effective_text_preview(self, test_session):
+        """Given: TranscriptCue with corrected text
+        When: Calling repr()
+        Then: Shows effective text preview (corrected version)
+        """
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="segment_001",
+            start_time=0.0,
+            end_time=30.0,
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=0.0,
+            end_time=3.0,
+            text="Helo world this is a long text",
+            corrected_text="Hello world this is a long text",
+            is_corrected=True,
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        result = repr(cue)
+
+        # Should show corrected text preview
+        assert "Hello world this is" in result

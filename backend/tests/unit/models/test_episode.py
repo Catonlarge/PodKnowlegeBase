@@ -234,3 +234,58 @@ class TestEpisodeRepr:
         assert f"id={episode.id}" in result
         assert "Test Episode" in result
         assert "status=0" in result
+
+
+class TestEpisodeProofreadFields:
+    """Test Episode proofreading-related fields."""
+
+    def test_proofread_status_default_is_pending(self, test_session):
+        """Given: New Episode
+        When: Not specifying proofread_status
+        Then: Defaults to 'pending'
+        """
+        episode = Episode(
+            title="Test",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        assert episode.proofread_status == "pending"
+
+    def test_proofread_at_nullable(self, test_session):
+        """Given: New Episode
+        When: Not specifying proofread_at
+        Then: Can be NULL
+        """
+        episode = Episode(
+            title="Test",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        assert episode.proofread_at is None
+
+    def test_proofread_at_can_be_set(self, test_session):
+        """Given: Episode
+        When: Setting proofread_at
+        Then: Value is correctly saved
+        """
+        from datetime import datetime
+
+        episode = Episode(
+            title="Test",
+            file_hash="test123",
+            duration=100.0,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        episode.proofread_at = datetime(2026, 2, 5, 12, 0, 0)
+        test_session.commit()
+
+        assert episode.proofread_at is not None
+        assert episode.proofread_at.hour == 12
