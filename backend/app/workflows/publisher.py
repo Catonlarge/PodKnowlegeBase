@@ -15,6 +15,7 @@ from app.enums.workflow_status import WorkflowStatus
 from app.models import Episode, Translation, MarketingPost, PublicationRecord
 from app.services.obsidian_service import ObsidianService
 from app.services.marketing_service import MarketingService
+from app.services.publishers.notion import NotionPublisher
 from app.services.publishers.feishu import FeishuPublisher
 from app.services.publishers.ima import ImaPublisher
 from app.services.publishers.marketing import MarketingPublisher
@@ -66,11 +67,19 @@ class WorkflowPublisher:
             self.marketing_service = None
 
         # Initialize platform publishers
-        self.publishers = {
-            "feishu": FeishuPublisher(),
-            "ima": ImaPublisher(),
-            "marketing": MarketingPublisher(),
-        }
+        self.publishers = {}
+
+        # NotionPublisher 需要数据库会话
+        try:
+            self.publishers["notion"] = NotionPublisher(db)
+        except (ValueError, ImportError) as e:
+            self.console.print(f"  [yellow]警告: Notion 发布器初始化失败: {e}[/yellow]")
+            self.console.print("  [yellow]  跳过 Notion 发布（需要配置 NOTION_API_KEY）[/yellow]")
+
+        # 其他发布器（Stub 实现）
+        self.publishers["feishu"] = FeishuPublisher()
+        self.publishers["ima"] = ImaPublisher()
+        self.publishers["marketing"] = MarketingPublisher()
 
     def publish_workflow(self, episode_id: int) -> Episode:
         """
@@ -208,25 +217,37 @@ class WorkflowPublisher:
             self.console.print(f"  发布到 {platform_name}...")
 
             try:
-                # Prepare content for this platform
-                content = {
-                    "title": episode.title or f"Episode {episode.id}",
-                    "summary": episode.ai_summary or "",
-                    "posts": [
-                        {
-                            "angle_tag": post.angle_tag,
-                            "content": post.content
-                        }
-                        for post in posts
-                    ]
-                }
+                # NotionPublisher 使用不同的 API
+                if platform_name == "notion":
+                    # 只发布 Episode 内容（中英对照翻译、章节分析）
+                    # 营销文案不发布到 Notion，用于其他平台
+                    episode_record = publisher.publish_episode(episode)
+                    records.append(episode_record)
 
-                # Publish
-                record = publisher.publish(episode, content)
-                records.append(record)
+                    status = "成功" if episode_record.status == "success" else "失败"
+                    self.console.print(f"    {status}: {episode_record.platform}")
 
-                status = "成功" if record.status == "success" else "失败"
-                self.console.print(f"    {status}: {record.platform}")
+                else:
+                    # 其他平台使用 publish 方法
+                    # Prepare content for this platform
+                    content = {
+                        "title": episode.title or f"Episode {episode.id}",
+                        "summary": episode.ai_summary or "",
+                        "posts": [
+                            {
+                                "angle_tag": post.angle_tag,
+                                "content": post.content
+                            }
+                            for post in posts
+                        ]
+                    }
+
+                    # Publish
+                    record = publisher.publish(episode, content)
+                    records.append(record)
+
+                    status = "成功" if record.status == "success" else "失败"
+                    self.console.print(f"    {status}: {record.platform}")
 
             except Exception as e:
                 self.console.print(f"    失败: {str(e)}")
