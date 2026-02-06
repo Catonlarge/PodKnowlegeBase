@@ -101,5 +101,19 @@ class Episode(Base, TimestampMixin):
         Index("idx_episodes_proofread_status", "proofread_status"),
     )
 
+    @property
+    def display_title(self) -> str:
+        """
+        获取显示用的标题（带回退逻辑）。
+
+        跨平台兼容的显示标题，支持多级回退策略。
+        优先级: title -> show_name -> audio_path -> source_url -> id
+
+        Returns:
+            str: 显示标题
+        """
+        from app.services.episode_service import EpisodeService
+        return EpisodeService.get_display_title(self)
+
     def __repr__(self) -> str:
         return f"<Episode(id={self.id}, title='{self.title}', status={self.workflow_status})>"

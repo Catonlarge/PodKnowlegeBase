@@ -108,5 +108,21 @@ class Chapter(Base, TimestampMixin):
         """Chapter duration in seconds (dynamically calculated)."""
         return self.end_time - self.start_time
 
+    def display_title(self, episode: "Episode") -> str:
+        """
+        获取显示用的标题（带回退逻辑）。
+
+        跨平台兼容的显示标题，支持多级回退策略。
+        优先级: title -> time_range -> index -> episode_title
+
+        Args:
+            episode: 所属 Episode 实例
+
+        Returns:
+            str: 显示标题
+        """
+        from app.services.chapter_service import ChapterService
+        return ChapterService.get_display_title(self, episode)
+
     def __repr__(self) -> str:
         return f"<Chapter(id={self.id}, title='{self.title}', status='{self.status}')>"
