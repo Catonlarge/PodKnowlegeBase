@@ -14,6 +14,7 @@ from app.schemas.chapter import (
     ChapterResponse,
     ChapterDetailResponse,
     ChapterListResponse,
+    ChapterCuesListResponse,
 )
 
 
@@ -87,7 +88,7 @@ async def get_chapter(
     return response_data
 
 
-@router.get("/chapters/{chapter_id}/cues", response_model=ChapterListResponse)
+@router.get("/chapters/{chapter_id}/cues")
 async def get_chapter_cues(
     chapter_id: int,
     db: Session = Depends(get_session),

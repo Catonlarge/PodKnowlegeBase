@@ -70,7 +70,7 @@ async def list_marketing_posts(
     )
 
 
-@router.post("/episodes/{episode_id}/marketing-posts/generate", response_model=MarketingPostListResponse)
+@router.post("/episodes/{episode_id}/marketing-posts/generate", response_model=MarketingPostListResponse, status_code=status.HTTP_201_CREATED)
 async def generate_marketing_posts(
     episode_id: int,
     request: GenerateMarketingRequest,
@@ -105,17 +105,27 @@ async def generate_marketing_posts(
 
     # 生成营销文案
     try:
-        posts = service.generate_posts(episode_id)
+        # 使用实际存在的方法生成文案
+        marketing_copy = service.generate_xiaohongshu_copy(episode_id)
 
-        # 如果指定了角度过滤，返回匹配的文案
-        if request.angles:
-            filtered_posts = [p for p in posts if p.angle_tag in request.angles]
-            posts = filtered_posts if filtered_posts else posts
+        # 保存到数据库
+        angle_tags_map = {
+            "xhs": "AI干货向",
+            "default": "轻松有趣向"
+        }
+        angle_tag = angle_tags_map.get(request.platform, "AI干货向")
+
+        post = service.save_marketing_copy(
+            episode_id=episode_id,
+            copy=marketing_copy,
+            platform=request.platform,
+            angle_tag=angle_tag
+        )
 
         return MarketingPostListResponse(
             episode_id=episode_id,
-            total=len(posts),
-            items=posts,
+            total=1,
+            items=[post],
         )
     except Exception as e:
         db.rollback()

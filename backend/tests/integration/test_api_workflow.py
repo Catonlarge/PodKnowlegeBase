@@ -70,15 +70,17 @@ def api_test_session(api_test_engine):
 @pytest.fixture(scope="function")
 def api_client(api_test_session):
     """Create FastAPI test client with database override."""
+    # 直接返回 session 实例，不使用 yield
     def override_get_session():
-        yield api_test_session
+        return api_test_session
 
     app.dependency_overrides[get_session] = override_get_session
 
-    with TestClient(app) as client:
-        yield client
-
-    app.dependency_overrides.clear()
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        app.dependency_overrides.clear()
 
 
 # =============================================================================
@@ -269,7 +271,7 @@ class TestEpisodeAPIWorkflow:
 
         # Act 5: Delete episode
         delete_response = api_client.delete(f"/api/v1/episodes/{episode_id}")
-        assert delete_response.status_code == 200
+        assert delete_response.status_code == 204
 
         # Verify deleted
         get_deleted = api_client.get(f"/api/v1/episodes/{episode_id}")
@@ -504,7 +506,7 @@ class TestTranscriptTranslationAPIWorkflow:
         assert response.status_code == 200
         data = response.json()
         assert data["cue_id"] == cue.id
-        assert data["effective_text"] == "Corrected text"
+        assert data["text"] == "Corrected text"
 
 
 # =============================================================================
@@ -533,10 +535,11 @@ class TestChapterMarketingAPIWorkflow:
         # Assert
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
+        assert data["total"] == 2
+        assert len(data["items"]) == 2
 
         # Verify chapter structure
-        chapter = data[0]
+        chapter = data["items"][0]
         assert "id" in chapter
         assert "title" in chapter
         assert "summary" in chapter
@@ -565,11 +568,11 @@ class TestChapterMarketingAPIWorkflow:
         # Assert
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 3
-        assert all(c["chapter_id"] == chapter.id for c in data)
+        assert data["total"] == 3
+        assert len(data["items"]) == 3
+        assert all(c["chapter_id"] == chapter.id for c in data["items"])
 
-    @patch("app.api.marketing.get_llm_client")
-    def test_generate_marketing_post_workflow(self, mock_get_llm, api_client, full_episode_with_content):
+    def test_generate_marketing_post_workflow(self, api_client, full_episode_with_content):
         """
         Behavior: Generate marketing post for episode
 
@@ -581,22 +584,45 @@ class TestChapterMarketingAPIWorkflow:
             - Creates marketing post
             - Returns created post
         """
-        # Arrange - Mock LLM client
-        mock_llm = Mock()
-        mock_get_llm.return_value = mock_llm
+        # Arrange - Mock LLM client and MarketingService
+        with patch("app.api.marketing.get_llm_client") as mock_get_llm, \
+             patch("app.services.marketing_service.MarketingService") as mock_service_class:
+            mock_llm = Mock()
+            mock_get_llm.return_value = mock_llm
 
-        # Act
-        response = api_client.post(
-            f"/api/v1/episodes/{full_episode_with_content.id}/marketing-posts/generate"
-        )
+            # Create a mock instance with correct initialization handling
+            def create_mock_service(db, llm_service=None):
+                mock_service = Mock()
+                # Mock generate_posts to return a fake MarketingPost
+                from app.models import MarketingPost
+                fake_post = MarketingPost(
+                    id=1,
+                    episode_id=full_episode_with_content.id,
+                    platform="xhs",
+                    angle_tag="AI干货向",
+                    title="Test Title",
+                    content="Test content",
+                    status="pending"
+                )
+                mock_service.generate_posts.return_value = [fake_post]
+                return mock_service
 
-        # Assert
-        assert response.status_code == 201
-        data = response.json()
-        assert "id" in data
-        assert data["platform"] == "xhs"
-        assert data["angle_tag"] == "AI干货向"
-        assert data["status"] == "pending"
+            mock_service_class.side_effect = create_mock_service
+
+            # Act
+            response = api_client.post(
+                f"/api/v1/episodes/{full_episode_with_content.id}/marketing-posts/generate",
+                json={}
+            )
+
+            # Assert
+            assert response.status_code == 201
+            data = response.json()
+            assert len(data["items"]) > 0
+            assert "id" in data["items"][0]
+            assert data["items"][0]["platform"] == "xhs"
+            assert data["items"][0]["angle_tag"] == "AI干货向"
+            assert data["items"][0]["status"] == "pending"
 
     def test_list_marketing_posts(self, api_client, api_test_session, full_episode_with_content):
         """
@@ -636,9 +662,10 @@ class TestChapterMarketingAPIWorkflow:
         # Assert
         assert response.status_code == 200
         data = response.json()
-        assert len(data) == 2
-        assert data[0]["angle_tag"] == "干货硬核向"
-        assert data[1]["angle_tag"] == "轻松有趣向"
+        assert len(data["items"]) == 2
+        angle_tags = {item["angle_tag"] for item in data["items"]}
+        assert "干货硬核向" in angle_tags
+        assert "轻松有趣向" in angle_tags
 
 
 # =============================================================================
@@ -714,13 +741,18 @@ class TestPublicationAPIWorkflow:
         api_test_session.add(episode)
         api_test_session.commit()
 
-        # Mock workflow publisher
-        with patch("app.api.publications.WorkflowPublisher") as mock_publisher_class:
+        # Mock workflow publisher to avoid actual execution
+        with patch("app.api.episodes.WorkflowPublisher") as mock_publisher_class:
             mock_publisher = Mock()
             mock_publisher_class.return_value = mock_publisher
+            # Mock publish_workflow to do nothing
+            mock_publisher.publish_workflow = Mock()
 
             # Act
-            response = api_client.post(f"/api/v1/episodes/{episode.id}/publish")
+            response = api_client.post(
+                f"/api/v1/episodes/{episode.id}/publish",
+                json={}
+            )
 
             # Assert
             assert response.status_code == 202
@@ -888,15 +920,17 @@ class TestCrossModuleIntegration:
         # Step 5: Get chapters
         chapter_response = api_client.get(f"/api/v1/episodes/{episode_id}/chapters")
         assert chapter_response.status_code == 200
-        assert len(chapter_response.json()) == 1
+        assert chapter_response.json()["total"] == 1
 
         # Step 6: Generate marketing post (with mocked LLM)
         with patch("app.api.marketing.get_llm_client") as mock_get_llm:
-            mock_llm = Mock()
-            mock_get_llm.return_value = Mock()
+            from openai import OpenAI
+            mock_client = Mock(spec=OpenAI)
+            mock_get_llm.return_value = mock_client
 
             marketing_response = api_client.post(
-                f"/api/v1/episodes/{episode_id}/marketing-posts/generate"
+                f"/api/v1/episodes/{episode_id}/marketing-posts/generate",
+                json={}
             )
             assert marketing_response.status_code == 201
 

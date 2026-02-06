@@ -86,3 +86,10 @@ class EpisodePublishRequest(BaseModel):
     platforms: Optional[list[str]] = Field(
         None, description="指定发布平台（null 表示全部）"
     )
+
+
+class EpisodeTaskResponse(BaseModel):
+    """Episode 后台任务响应"""
+
+    id: int
+    message: str

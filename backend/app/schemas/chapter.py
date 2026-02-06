@@ -4,7 +4,7 @@ Chapter Schemas
 Pydantic models for Chapter API request/response validation.
 """
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
 from pydantic import BaseModel
 
@@ -40,3 +40,11 @@ class ChapterListResponse(BaseModel):
     episode_id: int
     total: int
     items: list[ChapterResponse]
+
+
+class ChapterCuesListResponse(BaseModel):
+    """章节字幕列表响应"""
+
+    chapter_id: int
+    total: int
+    items: list[Any]

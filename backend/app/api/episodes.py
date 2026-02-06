@@ -21,6 +21,7 @@ from app.schemas.episode import (
     EpisodeListResponse,
     EpisodeWorkflowRequest,
     EpisodePublishRequest,
+    EpisodeTaskResponse,
 )
 from app.workflows.runner import WorkflowRunner, create_or_get_episode
 from app.workflows.publisher import WorkflowPublisher
@@ -146,7 +147,9 @@ async def get_episode(
     # 转换为响应模型并计算统计
     response_data = EpisodeDetailResponse.model_validate(episode)
     response_data.segments_count = len(episode.segments)
-    response_data.cues_count = len(episode.transcript_cues)
+    # 通过 segments 的 transcript_cues 计算 cues 数量
+    cues_count = sum(len(segment.transcript_cues) for segment in episode.segments)
+    response_data.cues_count = cues_count
     response_data.chapters_count = len(episode.chapters)
     response_data.marketing_posts_count = len(episode.marketing_posts)
 
@@ -206,7 +209,7 @@ async def delete_episode(
     return None
 
 
-@router.post("/episodes/{episode_id}/run", response_model=EpisodeResponse)
+@router.post("/episodes/{episode_id}/run", response_model=EpisodeTaskResponse, status_code=status.HTTP_202_ACCEPTED)
 async def run_episode_workflow(
     episode_id: int,
     request: EpisodeWorkflowRequest,
@@ -247,10 +250,13 @@ async def run_episode_workflow(
 
     background_tasks.add_task(run_workflow_task)
 
-    return episode
+    return EpisodeTaskResponse(
+        id=episode.id,
+        message="Workflow scheduled to run in background"
+    )
 
 
-@router.post("/episodes/{episode_id}/publish", response_model=EpisodeResponse)
+@router.post("/episodes/{episode_id}/publish", response_model=EpisodeTaskResponse, status_code=status.HTTP_202_ACCEPTED)
 async def publish_episode(
     episode_id: int,
     request: EpisodePublishRequest,
@@ -299,4 +305,7 @@ async def publish_episode(
 
     background_tasks.add_task(publish_task)
 
-    return episode
+    return EpisodeTaskResponse(
+        id=episode.id,
+        message="Publication workflow scheduled to run in background"
+    )
