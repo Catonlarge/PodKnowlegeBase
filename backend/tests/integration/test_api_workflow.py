@@ -39,12 +39,20 @@ def api_test_engine():
     Uses shared cache mode to allow multiple connections to the same
     in-memory database (needed for FastAPI TestClient).
     """
+    import sqlite3
+    import os
+
     engine = create_engine(
         "sqlite:///file:memorydb?mode=memory&cache=shared",
         connect_args={"check_same_thread": False},
+        creator=lambda: sqlite3.connect("file:memorydb?mode=memory&cache=shared", check_same_thread=False),
     )
     yield engine
     engine.dispose()
+
+    # 清理 SQLite 副作用文件
+    if os.path.exists("file"):
+        os.remove("file")
 
 
 @pytest.fixture(scope="function")
@@ -584,30 +592,11 @@ class TestChapterMarketingAPIWorkflow:
             - Creates marketing post
             - Returns created post
         """
-        # Arrange - Mock LLM client and MarketingService
-        with patch("app.api.marketing.get_llm_client") as mock_get_llm, \
-             patch("app.services.marketing_service.MarketingService") as mock_service_class:
-            mock_llm = Mock()
-            mock_get_llm.return_value = mock_llm
-
-            # Create a mock instance with correct initialization handling
-            def create_mock_service(db, llm_service=None):
-                mock_service = Mock()
-                # Mock generate_posts to return a fake MarketingPost
-                from app.models import MarketingPost
-                fake_post = MarketingPost(
-                    id=1,
-                    episode_id=full_episode_with_content.id,
-                    platform="xhs",
-                    angle_tag="AI干货向",
-                    title="Test Title",
-                    content="Test content",
-                    status="pending"
-                )
-                mock_service.generate_posts.return_value = [fake_post]
-                return mock_service
-
-            mock_service_class.side_effect = create_mock_service
+        # Arrange - Mock LLM client
+        with patch("app.api.marketing.get_llm_client") as mock_get_llm:
+            from openai import OpenAI
+            mock_client = Mock(spec=OpenAI)
+            mock_get_llm.return_value = mock_client
 
             # Act
             response = api_client.post(
