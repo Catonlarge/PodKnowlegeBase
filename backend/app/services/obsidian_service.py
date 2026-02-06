@@ -252,6 +252,7 @@ class ObsidianService:
 
         格式解析：
         ### [00:00](cue://1454)
+        **Speaker**: Speaker名称
         **英文**: English text...
         **中文**: 中文翻译...
 
@@ -467,12 +468,9 @@ class ObsidianService:
         )
 
     def _render_header(self, episode: Episode) -> str:
-        """生成标题和概览（使用 display_title）"""
+        """生成概览（不包含主标题，因为文件名已显示）"""
         summary = episode.ai_summary or "暂无概览"
-        return (
-            f"# {episode.display_title}\n\n"
-            f"> **全文概览：** {summary}"
-        )
+        return f"> **全文概览：** {summary}"
 
     def _render_chapter_navigation(self, chapters: List[Chapter], episode: Episode) -> str:
         """生成章节导航表格（使用 display_title）"""
@@ -505,10 +503,10 @@ class ObsidianService:
         sections = []
 
         for chapter in chapters:
-            # 使用 display_title
+            # 使用 display_title（不包含序号前缀）
             chapter_display_title = chapter.display_title(episode)
             safe_title = self._sanitize_anchor(chapter_display_title)
-            section_title = f"## {chapter.chapter_index + 1}: {chapter_display_title}\n\n"
+            section_title = f"## {chapter_display_title}\n\n"
 
             # 章节摘要
             section_summary = ""
@@ -542,13 +540,22 @@ class ObsidianService:
         return "## 字幕内容\n\n" + self._render_bilingual_table(cues, language_code)
 
     def _render_bilingual_table(self, cues: List[TranscriptCue], language_code: str) -> str:
-        """生成双语字幕区块（每个 Cue 一个独立区块）"""
+        """
+        生成双语字幕区块（每个 Cue 一个独立区块）
+
+        格式：
+        ### [MM:SS](cue://ID)
+        **Speaker**: Speaker名称
+        **英文**: English text...
+        **中文**: 中文翻译...
+        """
         sections = []
         for cue in cues:
             translation = cue.get_translation(language_code)
             translation_text = translation if translation else "[未翻译]"
 
             section = f"""{cue.obsidian_anchor}
+**Speaker**: {cue.speaker}
 **英文**: {cue.text}
 
 **中文**: {translation_text}"""
