@@ -132,6 +132,11 @@ GEMINI_MODEL = get_config("ai.gemini.model", "gemini-2.5-flash")
 AI_QUERY_TIMEOUT = get_config("ai.query_timeout", 60)
 USE_AI_MOCK = get_config("ai.use_mock", False)
 
+# ==================== Marketing Service LLM Configuration ====================
+# Marketing service LLM provider selection (zhipu, moonshot, gemini)
+# Modify in config.yaml to switch provider
+MARKETING_LLM_PROVIDER = get_config("ai.marketing.provider", "zhipu")
+
 # ==================== Audio Processing Configuration ====================
 
 # Whisper Settings
@@ -171,6 +176,43 @@ NOTION_API_BASE_URL = get_config("notion.api_base_url", "https://api.notion.com/
 
 
 # ==================== Utility Functions ====================
+def get_marketing_llm_config() -> dict:
+    """
+    Get marketing service LLM configuration based on provider setting.
+
+    Returns:
+        dict: Contains 'api_key', 'base_url', 'model' for the selected provider
+
+    Raises:
+        ValueError: If provider is not supported or API key is not set
+    """
+    provider = MARKETING_LLM_PROVIDER.lower()
+
+    if provider == "zhipu":
+        return {
+            "api_key": ZHIPU_API_KEY,
+            "base_url": ZHIPU_BASE_URL,
+            "model": ZHIPU_MODEL
+        }
+    elif provider == "moonshot":
+        return {
+            "api_key": MOONSHOT_API_KEY,
+            "base_url": MOONSHOT_BASE_URL,
+            "model": MOONSHOT_MODEL
+        }
+    elif provider == "gemini":
+        return {
+            "api_key": GEMINI_API_KEY,
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "model": GEMINI_MODEL
+        }
+    else:
+        raise ValueError(
+            f"Unsupported marketing LLM provider: {provider}. "
+            f"Supported providers: zhipu, moonshot, gemini"
+        )
+
+
 def reload_config():
     """Reload configuration from config.yaml file."""
     global _config

@@ -9,19 +9,17 @@ Marketing Service - 小红书风格营销文案生成服务
 5. 文案持久化
 """
 import json
-import logging
 import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
+from loguru import logger
 from sqlalchemy.orm import Session
 from openai import OpenAI
 
 from app.models import Episode, MarketingPost, TranscriptCue, AudioSegment, Chapter, Translation
 from app.config import get_marketing_llm_config, AI_QUERY_TIMEOUT
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
