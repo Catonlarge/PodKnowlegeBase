@@ -90,12 +90,17 @@ class SegmentationService:
         Raises:
             ValueError: Episode 不存在或未转录
         """
-        # 验证 Episode 存在且已转录
+        # 验证 Episode 存在且已转录（或已校对）
         episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
         if not episode:
             raise ValueError(f"Episode 不存在: episode_id={episode_id}")
 
-        if episode.workflow_status != WorkflowStatus.TRANSCRIBED.value:
+        # 允许 TRANSCRIBED 或 PROOFREAD 状态
+        valid_statuses = [
+            WorkflowStatus.TRANSCRIBED.value,
+            WorkflowStatus.PROOFREAD.value
+        ]
+        if episode.workflow_status not in valid_statuses:
             raise ValueError(
                 f"Episode 未转录，当前状态: {WorkflowStatus(episode.workflow_status).label}"
             )
