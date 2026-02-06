@@ -25,6 +25,7 @@ python-frontmatter>=1.0.0
 
 # ==================== Platform Integration ====================
 lark-oapi>=1.2.0
+notion-client>=2.2.1
 
 # ==================== Config and Logging ====================
 python-dotenv>=1.0.0

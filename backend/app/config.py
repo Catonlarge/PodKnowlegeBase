@@ -110,6 +110,7 @@ DATABASE_ECHO = get_config("database.echo", False)
 # Obsidian Integration
 OBSIDIAN_VAULT_PATH = get_config("obsidian.vault_path", "")
 OBSIDIAN_NOTES_SUBDIR = get_config("obsidian.notes_subdir", "Episodes")
+OBSIDIAN_MARKETING_SUBDIR = get_config("obsidian.marketing_subdir", "Marketing")
 
 # ==================== AI Service Configuration ====================
 
@@ -158,6 +159,15 @@ CORS_ORIGINS = get_config("api.cors_origins", ["http://localhost:5173"])
 # ==================== HuggingFace Token ====================
 # Required for WhisperX speaker diarization
 HF_TOKEN = _get_env_key("HF_TOKEN", required=True)
+
+# ==================== Notion Integration ====================
+# API Key from environment variable (required for publishing content)
+NOTION_API_KEY = _get_env_key("NOTION_API_KEY", required=False)
+
+# Notion configuration from config.yaml
+NOTION_PARENT_PAGE_ID = get_config("notion.parent_page_id", "")
+NOTION_API_VERSION = get_config("notion.api_version", "2022-06-28")
+NOTION_API_BASE_URL = get_config("notion.api_base_url", "https://api.notion.com/v1")
 
 
 # ==================== Utility Functions ====================
