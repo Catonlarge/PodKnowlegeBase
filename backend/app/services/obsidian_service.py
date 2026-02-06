@@ -19,9 +19,9 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.models import Episode, AudioSegment, TranscriptCue, Translation, Chapter
+from app.models import Episode, AudioSegment, TranscriptCue, Translation, Chapter, MarketingPost
 from app.enums.translation_status import TranslationStatus
-from app.config import OBSIDIAN_VAULT_PATH, OBSIDIAN_NOTES_SUBDIR
+from app.config import OBSIDIAN_VAULT_PATH, OBSIDIAN_NOTES_SUBDIR, OBSIDIAN_MARKETING_SUBDIR
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,91 @@ class ObsidianService:
             f.write(markdown)
 
         logger.info(f"Obsidian 文档已保存: {file_path}")
+        return file_path
+
+    def render_marketing_posts(self, episode_id: int) -> str:
+        """
+        渲染营销文案为 Obsidian Markdown
+
+        Args:
+            episode_id: Episode ID
+
+        Returns:
+            str: Markdown 内容
+
+        Raises:
+            ValueError: Episode 不存在
+        """
+        logger.debug(f"渲染营销文案: episode_id={episode_id}")
+
+        # 获取 Episode
+        episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
+        if not episode:
+            raise ValueError(f"Episode not found: id={episode_id}")
+
+        # 获取所有营销文案，按角度标签分组
+        posts = self.db.query(MarketingPost).filter(
+            MarketingPost.episode_id == episode_id
+        ).order_by(MarketingPost.created_at).all()
+
+        if not posts:
+            return ""
+
+        # 生成 YAML Frontmatter
+        frontmatter = self._render_marketing_frontmatter(episode)
+
+        # 生成标题
+        header = f"# 营销文案 - {episode.title}\n\n"
+
+        # 生成内容（按角度分组）
+        content = self._render_marketing_content(posts, episode)
+
+        markdown = (
+            f"{frontmatter}\n\n"
+            f"{header}\n\n"
+            f"{content}"
+        )
+
+        return markdown
+
+    def save_marketing_posts(self, episode_id: int) -> Path:
+        """
+        生成并保存营销文案到 Obsidian Vault（单独文件）
+
+        Args:
+            episode_id: Episode ID
+
+        Returns:
+            Path: 保存的文件路径
+        """
+        logger.info(f"保存营销文案: episode_id={episode_id}")
+
+        # 渲染 Markdown
+        markdown = self.render_marketing_posts(episode_id)
+
+        if not markdown:
+            logger.warning(f"没有营销文案可保存: episode_id={episode_id}")
+            # 返回 None 或空路径
+            return None
+
+        # 获取 Episode
+        episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
+
+        # 生成安全的文件名
+        safe_title = self._sanitize_filename(episode.title)
+        filename = f"{episode.id}-marketing-{safe_title}.md"
+
+        # 确定保存路径（使用单独的 marketing 目录）
+        marketing_dir = Path(self.vault_path) / OBSIDIAN_MARKETING_SUBDIR
+        marketing_dir.mkdir(parents=True, exist_ok=True)
+
+        file_path = marketing_dir / filename
+
+        # 写入文件
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(markdown)
+
+        logger.info(f"营销文案已保存: {file_path}")
         return file_path
 
     # ========================================================================
@@ -292,6 +377,82 @@ class ObsidianService:
 
     # ========================================================================
     # 私有辅助方法 - 渲染
+    # ========================================================================
+
+    def _render_marketing_frontmatter(self, episode: Episode) -> str:
+        """生成营销文案的 YAML Frontmatter"""
+        return (
+            "---\n"
+            f"task_id: {episode.id}\n"
+            f"type: marketing\n"
+            f"url: {episode.source_url or 'N/A'}\n"
+            "status: pending_review\n"
+            "---"
+        )
+
+    def _render_marketing_content(self, posts: List[MarketingPost], episode: Episode) -> str:
+        """生成营销文案内容（按角度分组）"""
+        # 按角度标签分组
+        from collections import defaultdict
+        posts_by_angle = defaultdict(list)
+        for post in posts:
+            key = post.chapter_id if post.chapter_id else f"ep_{episode.id}"
+            posts_by_angle[(post.angle_tag, key)].append(post)
+
+        sections = []
+
+        # 按角度生成内容
+        for (angle, _), angle_posts in sorted(posts_by_angle.items()):
+            # 角度标题
+            angle_emoji = self._get_angle_emoji(angle)
+            section_title = f"## {angle_emoji} {angle}\n\n"
+
+            # 每个角度下可能有多个文案变体
+            posts_content = []
+            for i, post in enumerate(angle_posts, 1):
+                # 章节标识
+                chapter_info = ""
+                if post.chapter_id:
+                    chapter = self.db.query(Chapter).filter(Chapter.id == post.chapter_id).first()
+                    if chapter:
+                        chapter_info = f"\n\n> **章节**: {chapter.title} ({chapter.start_time:.0f}s - {chapter.end_time:.0f}s)\n"
+
+                # 文案编号
+                post_header = f"### 文案 {i}\n\n" if len(angle_posts) > 1 else ""
+
+                # 文案内容
+                content = f"{post_header}{chapter_info}{post.content}"
+
+                # 元数据
+                metadata = f"\n\n---\n\n**元数据**:\n"
+                metadata += f"- 创建时间: {post.created_at.strftime('%Y-%m-%d %H:%M')}\n"
+                # 计算字数
+                word_count = len(post.content)
+                metadata += f"- 字数: {word_count}\n"
+
+                posts_content.append(content + metadata)
+
+            sections.append(section_title + "\n\n".join(posts_content))
+
+        return "\n\n".join(sections)
+
+    @staticmethod
+    def _get_angle_emoji(angle: str) -> str:
+        """根据角度标签返回对应的 emoji"""
+        emoji_map = {
+            "职场焦虑向": "😰",
+            "干货硬核向": "📚",
+            "教育学习向": "🎓",
+            "情感共鸣向": "❤️",
+            "幽默搞笑向": "😄",
+            "励志激励向": "💪",
+            "案例分析向": "🔍",
+            "经验分享向": "💡",
+        }
+        return emoji_map.get(angle, "📝")
+
+    # ========================================================================
+    # 私有辅助方法 - 渲染（原有方法）
     # ========================================================================
 
     def _render_frontmatter(self, episode: Episode) -> str:
