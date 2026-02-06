@@ -115,12 +115,12 @@ class NotionPublisher:
         Returns:
             PublicationRecord: 发布记录
         """
-        logger.info(f"发布 Episode 到 Notion: id={episode.id}, title={episode.title}")
+        logger.info(f"发布 Episode 到 Notion: id={episode.id}, title={episode.display_title}")
 
         try:
             # 创建 Notion 页面
             page_id = self.create_episode_page(
-                title=episode.title,
+                episode=episode,
                 parent_page_id=self.parent_page_id
             )
 
@@ -141,16 +141,17 @@ class NotionPublisher:
 
             # 2. 添加章节总结（无链接，用于快速浏览）
             if chapters:
-                blocks.extend(self.render_chapters_block(chapters))
+                blocks.extend(self.render_chapters_block(chapters, episode))
 
             # 3. 添加"字幕内容"标题
             blocks.append(self._render_heading_block("字幕内容", level=2))
 
             # 4. 按章节添加标题和字幕内容
             for chapter in chapters:
-                # 章节标题
+                # 章节标题（使用 display_title）
+                chapter_display_title = chapter.display_title(episode)
                 heading_block = self._render_heading_block(
-                    f"{chapter.chapter_index + 1}: {chapter.title}",
+                    f"{chapter.chapter_index + 1}: {chapter_display_title}",
                     level=3
                 )
                 blocks.append(heading_block)
@@ -200,16 +201,19 @@ class NotionPublisher:
                     if len(summary) > 80:
                         summary = summary[:80] + "..."
 
+                    # 使用 display_title
+                    chapter_display_title = chapter.display_title(episode)
+
                     if block_id:
                         # 创建带链接的导航项（使用页面内锚点）
                         nav_blocks.append(self._render_link_block(
-                            title=f"{chapter_num}. {chapter.title}",
+                            title=f"{chapter_num}. {chapter_display_title}",
                             url=self._get_notion_block_url(block_id, page_id),
                             summary=summary
                         ))
                     else:
                         # 降级：无链接的文本
-                        item_text = f"**{chapter_num}. {chapter.title}**\n\n{summary}"
+                        item_text = f"**{chapter_num}. {chapter_display_title}**\n\n{summary}"
                         nav_blocks.append(self._render_paragraph_block(item_text))
 
                 # 添加分隔线
@@ -329,7 +333,7 @@ class NotionPublisher:
 
     def create_episode_page(
         self,
-        title: str,
+        episode: Episode,
         parent_page_id: Optional[str] = None,
         parent_type: str = "page_id"
     ) -> str:
@@ -337,7 +341,7 @@ class NotionPublisher:
         创建 Notion 页面
 
         Args:
-            title: 页面标题
+            episode: Episode 对象（使用 display_title）
             parent_page_id: 父节点 ID（默认使用配置中的 parent_page_id）
             parent_type: 父节点类型（"page_id" 或 "database_id"）
 
@@ -345,6 +349,7 @@ class NotionPublisher:
             str: 创建的页面 ID
         """
         parent_id = parent_page_id or self.parent_page_id
+        display_title = episode.display_title
 
         # Notion API 要求 parent 结构为：{"type": "page_id", "page_id": "xxx"}
         # 或者 {"type": "database_id", "database_id": "xxx"}
@@ -359,7 +364,7 @@ class NotionPublisher:
                 "title": [
                     {
                         "text": {
-                            "content": title
+                            "content": display_title
                         }
                     }
                 ]
@@ -367,7 +372,7 @@ class NotionPublisher:
         )
 
         page_id = response["id"]
-        logger.info(f"创建 Notion 页面成功: page_id={page_id}, title={title}")
+        logger.info(f"创建 Notion 页面成功: page_id={page_id}, title={display_title}")
 
         return page_id
 
@@ -375,7 +380,7 @@ class NotionPublisher:
     # Block 渲染方法
     # ========================================================================
 
-    def render_chapters_block(self, chapters: List[Chapter]) -> List[Dict[str, Any]]:
+    def render_chapters_block(self, chapters: List[Chapter], episode: Episode) -> List[Dict[str, Any]]:
         """
         渲染章节导航块（简化版，无时间戳）
 
@@ -384,6 +389,7 @@ class NotionPublisher:
 
         Args:
             chapters: Chapter 列表
+            episode: 所属 Episode 对象
 
         Returns:
             List[Dict]: Notion blocks 结构
@@ -411,11 +417,14 @@ class NotionPublisher:
             if len(summary) > 80:
                 summary = summary[:80] + "..."
 
+            # 使用 display_title
+            chapter_display_title = chapter.display_title(episode)
+
             # 章节标题（加粗）
             rich_text.append({
                 "type": "text",
                 "text": {
-                    "content": f"{chapter.chapter_index + 1}. {chapter.title}"
+                    "content": f"{chapter.chapter_index + 1}. {chapter_display_title}"
                 },
                 "annotations": {"bold": True}
             })

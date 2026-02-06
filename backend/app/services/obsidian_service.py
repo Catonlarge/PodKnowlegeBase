@@ -97,10 +97,10 @@ class ObsidianService:
         header = self._render_header(episode)
 
         # 生成章节导航
-        navigation = self._render_chapter_navigation(chapters)
+        navigation = self._render_chapter_navigation(chapters, episode)
 
         # 生成章节内容
-        content = self._render_chapters_content(chapters, language_code)
+        content = self._render_chapters_content(chapters, episode, language_code)
 
         # 如果没有章节，生成所有 Cue 的表格
         if not chapters:
@@ -135,8 +135,8 @@ class ObsidianService:
         # 获取 Episode
         episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
 
-        # 生成安全的文件名
-        safe_title = self._sanitize_filename(episode.title)
+        # 生成安全的文件名（使用 display_title）
+        safe_title = self._sanitize_filename(episode.display_title)
         filename = f"{episode.id}-{safe_title}.md"
 
         # 确定保存路径
@@ -183,8 +183,8 @@ class ObsidianService:
         # 生成 YAML Frontmatter
         frontmatter = self._render_marketing_frontmatter(episode)
 
-        # 生成标题
-        header = f"# 营销文案 - {episode.title}\n\n"
+        # 生成标题（使用 display_title）
+        header = f"# 营销文案 - {episode.display_title}\n\n"
 
         # 生成内容（按角度分组）
         content = self._render_marketing_content(posts, episode)
@@ -220,8 +220,8 @@ class ObsidianService:
         # 获取 Episode
         episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
 
-        # 生成安全的文件名
-        safe_title = self._sanitize_filename(episode.title)
+        # 生成安全的文件名（使用 display_title）
+        safe_title = self._sanitize_filename(episode.display_title)
         filename = f"{episode.id}-marketing-{safe_title}.md"
 
         # 确定保存路径（使用单独的 marketing 目录）
@@ -391,7 +391,7 @@ class ObsidianService:
         )
 
     def _render_marketing_content(self, posts: List[MarketingPost], episode: Episode) -> str:
-        """生成营销文案内容（按角度分组）"""
+        """生成营销文案内容（按角度分组，使用 display_title）"""
         # 按角度标签分组
         from collections import defaultdict
         posts_by_angle = defaultdict(list)
@@ -410,12 +410,13 @@ class ObsidianService:
             # 每个角度下可能有多个文案变体
             posts_content = []
             for i, post in enumerate(angle_posts, 1):
-                # 章节标识
+                # 章节标识（使用 display_title）
                 chapter_info = ""
                 if post.chapter_id:
                     chapter = self.db.query(Chapter).filter(Chapter.id == post.chapter_id).first()
                     if chapter:
-                        chapter_info = f"\n\n> **章节**: {chapter.title} ({chapter.start_time:.0f}s - {chapter.end_time:.0f}s)\n"
+                        chapter_display_title = chapter.display_title(episode)
+                        chapter_info = f"\n\n> **章节**: {chapter_display_title} ({chapter.start_time:.0f}s - {chapter.end_time:.0f}s)\n"
 
                 # 文案编号
                 post_header = f"### 文案 {i}\n\n" if len(angle_posts) > 1 else ""
@@ -466,26 +467,29 @@ class ObsidianService:
         )
 
     def _render_header(self, episode: Episode) -> str:
-        """生成标题和概览"""
+        """生成标题和概览（使用 display_title）"""
         summary = episode.ai_summary or "暂无概览"
         return (
-            f"# {episode.title}\n\n"
+            f"# {episode.display_title}\n\n"
             f"> **全文概览：** {summary}"
         )
 
-    def _render_chapter_navigation(self, chapters: List[Chapter]) -> str:
-        """生成章节导航表格"""
+    def _render_chapter_navigation(self, chapters: List[Chapter], episode: Episode) -> str:
+        """生成章节导航表格（使用 display_title）"""
         if not chapters:
             return ""
 
         rows = []
         for chapter in chapters:
-            safe_title = self._sanitize_anchor(chapter.title)
+            # 使用 display_title
+            chapter_display_title = chapter.display_title(episode)
+            safe_title = self._sanitize_anchor(chapter_display_title)
             time_range = f"{chapter.start_time:.0f} - {chapter.end_time:.0f}"
-            summary = (chapter.summary or "")[:50] + "..." if chapter.summary and len(chapter.summary) > 50 else (chapter.summary or "")
+            # 显示完整的 summary，不截断
+            summary = chapter.summary or ""
 
             rows.append(
-                f"| [{chapter.chapter_index + 1}: {chapter.title}](#{chapter.chapter_index + 1}-{safe_title}) "
+                f"| [{chapter.chapter_index + 1}: {chapter_display_title}](#{chapter.chapter_index + 1}-{safe_title}) "
                 f"| {time_range} | {summary} |"
             )
 
@@ -496,14 +500,15 @@ class ObsidianService:
             + "\n".join(rows)
         )
 
-    def _render_chapters_content(self, chapters: List[Chapter], language_code: str) -> str:
-        """生成章节内容"""
+    def _render_chapters_content(self, chapters: List[Chapter], episode: Episode, language_code: str) -> str:
+        """生成章节内容（使用 display_title）"""
         sections = []
 
         for chapter in chapters:
-            # 章节标题
-            safe_title = self._sanitize_anchor(chapter.title)
-            section_title = f"## {chapter.chapter_index + 1}: {chapter.title}\n\n"
+            # 使用 display_title
+            chapter_display_title = chapter.display_title(episode)
+            safe_title = self._sanitize_anchor(chapter_display_title)
+            section_title = f"## {chapter.chapter_index + 1}: {chapter_display_title}\n\n"
 
             # 章节摘要
             section_summary = ""
