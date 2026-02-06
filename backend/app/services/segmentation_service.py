@@ -18,16 +18,38 @@ logger = logging.getLogger(__name__)
 
 # Prompt 模板
 SEGMENTATION_PROMPT = """
-你是一个专业的音频内容分析师。请分析以下英文转录文本，进行语义章节划分。
+你是一个专业的音频内容分析师。请分析以下英文转录文本，进行**自适应语义章节划分**。
 
 **输入：**
-- 完整的英文 Transcript（含时间戳）
-- 总时长：{duration} 分钟
+- 英文 Transcript 采样（含时间戳，均匀分布）
+- 总时长：{duration} 分钟（{duration_seconds} 秒）
+- 采样说明：以下是从完整内容中均匀采样的代表性片段
+
+**核心原则（强制执行）：**
+1. **拒绝机械式切分**：章节划分必须依据内容的语义结构，而非时间区间
+2. **保持语义完整**：每个章节应该是一个完整的语义单元，避免把一个完整话题切碎
+3. **章节数量上限（严格执行）**：
+   - **短内容（< 8分钟）**：最多 **2 个章节**
+   - **中等内容（8-20分钟）**：最多 **4 个章节**
+   - **长内容（> 20分钟）**：最多 **6 个章节**
+4. **宁少勿多**：如果内容是一个连贯的对话，**可以不划分**（保留为单一章节）
 
 **任务：**
-1. 分析英文原文的语义转折点
-2. 划分为 3-10 个章节
-3. 直接输出**中文**的章节标题和摘要
+1. 分析采样内容的语义转折点和话题变化
+2. **根据采样内容推断完整内容的章节划分**
+3. 章节的 start_time 和 end_time **必须使用秒作为单位**，基于总秒数（{duration_seconds}秒）进行合理分配
+4. 直接输出**中文**的章节标题和摘要
+
+**切分决策示例：**
+- ❌ 错误：75分钟内容只划分前面2分钟 → 时间范围错误
+- ✅ 正确：75分钟内容（4500秒）划分成覆盖完整时长的章节 → 符合实际时长
+- ❌ 错误：5分钟内容切分成3个以上章节 → 违反"最多2章"规则
+- ✅ 正确：5分钟内容切分成1-2个章节 → 符合规则
+
+**当前内容判定：**
+- 总时长：{duration} 分钟（{duration_seconds} 秒）
+- 最大章节数：{max_chapters} 个
+- **重要**：输出的章节时间范围必须覆盖 [0, {duration_seconds}秒] 的完整区间
 
 **输出格式（JSON）：**
 ```json
@@ -37,13 +59,14 @@ SEGMENTATION_PROMPT = """
       "title": "开场介绍",
       "summary": "主持人介绍了今天的主题...",
       "start_time": 0.0,
-      "end_time": 120.5
+      "end_time": 720.5
     }}
   ]
 }}
 ```
+**注意：start_time 和 end_time 必须是秒数**，例如：75分钟的内容应输出 0-4500 秒的范围。
 
-**Transcript:**
+**Transcript (采样):**
 {transcript}
 """
 
@@ -73,8 +96,8 @@ class SegmentationService:
     def analyze_and_segment(
         self,
         episode_id: int,
-        min_chapters: int = 3,
-        max_chapters: int = 10
+        min_chapters: int = 1,
+        max_chapters: int = 15
     ) -> List[Chapter]:
         """
         分析并切分章节
@@ -122,8 +145,19 @@ class SegmentationService:
 
         # 调用 AI 分析
         duration_minutes = episode.duration / 60
+
+        # 计算最大章节数（根据PRD要求）
+        if duration_minutes < 8:
+            max_chapters = 2
+        elif duration_minutes < 20:
+            max_chapters = 4
+        else:
+            max_chapters = 6
+
         prompt = SEGMENTATION_PROMPT.format(
-            duration=duration_minutes,
+            duration=f"{duration_minutes:.1f}",
+            duration_seconds=f"{episode.duration:.0f}",
+            max_chapters=max_chapters,
             transcript=transcript_text
         )
 
@@ -150,19 +184,55 @@ class SegmentationService:
 
     def _build_transcript_text(
         self,
-        cues: List[TranscriptCue]
+        cues: List[TranscriptCue],
+        max_cues: int = 150
     ) -> str:
         """
         构建 Transcript 文本（含时间戳）
 
+        对于长内容，使用**基于时间的均匀采样策略**：
+        - 确保采样的内容覆盖完整的时间范围
+        - 从开头到结尾均匀分布采样点
+
         Args:
             cues: TranscriptCue 列表
+            max_cues: 最大处理的 cue 数量（默认150）
 
         Returns:
             str: 格式化的 Transcript 文本
         """
+        if len(cues) <= max_cues:
+            # 短内容：全部处理
+            sampled_cues = cues
+        else:
+            # 长内容：基于时间均匀采样
+            # 计算总时长
+            total_duration = cues[-1].start_time
+            # 计算目标采样间隔（秒）
+            sample_interval = total_duration / max_cues
+
+            sampled_cues = []
+            last_sampled_time = -1
+
+            for cue in cues:
+                # 每隔 sample_interval 采样一条
+                if cue.start_time - last_sampled_time >= sample_interval:
+                    sampled_cues.append(cue)
+                    last_sampled_time = cue.start_time
+
+                    if len(sampled_cues) >= max_cues:
+                        break
+
+            # 确保最后一条被包含
+            if sampled_cues and sampled_cues[-1].id != cues[-1].id:
+                sampled_cues.append(cues[-1])
+
+            logger.info(f"基于时间均匀采样: 原始 {len(cues)} 条 -> 采样后 {len(sampled_cues)} 条")
+            logger.info(f"时间覆盖: {sampled_cues[0].start_time:.0f}s - {sampled_cues[-1].start_time:.0f}s")
+
+        # 构建文本
         lines = []
-        for cue in cues:
+        for cue in sampled_cues:
             minutes = int(cue.start_time // 60)
             seconds = int(cue.start_time % 60)
             time_str = f"[{minutes:02d}:{seconds:02d}]"
@@ -310,14 +380,14 @@ class SegmentationService:
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是一个专业的音频内容分析师，擅长进行语义章节划分。"
+                        "content": "你是一个专业的音频内容分析师。你擅长识别内容的语义结构，拒绝机械式时间切分，始终保持章节的语义完整性。对于短内容，你会减少切分；对于长内容，你会适当增加切分点，但绝不碎片化。"
                     },
                     {
                         "role": "user",
                         "content": prompt
                     }
                 ],
-                temperature=0.3,
+                temperature=0.6,  # kimi-k2-turbo-preview supports 0-1 (default 0.6)
             )
 
             response_text = completion.choices[0].message.content

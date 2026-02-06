@@ -117,7 +117,7 @@ OBSIDIAN_MARKETING_SUBDIR = get_config("obsidian.marketing_subdir", "Marketing")
 # Moonshot Kimi (Primary AI Service)
 MOONSHOT_API_KEY = _get_env_key("MOONSHOT_API_KEY", required=True)
 MOONSHOT_BASE_URL = get_config("ai.moonshot.base_url", "https://api.moonshot.cn/v1")
-MOONSHOT_MODEL = get_config("ai.moonshot.model", "moonshot-v1-8k")
+MOONSHOT_MODEL = get_config("ai.moonshot.model", "kimi-k2-turbo-preview")
 
 # Zhipu GLM (Secondary AI Service)
 ZHIPU_API_KEY = _get_env_key("ZHIPU_API_KEY", required=True)
