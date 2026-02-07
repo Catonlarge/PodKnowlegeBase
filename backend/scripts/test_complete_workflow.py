@@ -103,6 +103,30 @@ class CompleteWorkflowTester:
         self.console.print()
         return True
 
+    def load_episode_by_id(self, episode_id: int) -> Episode:
+        """直接通过 ID 加载 Episode"""
+        self.console.print()
+        self.console.print("[bold cyan]Step 1: 加载 Episode[/bold cyan]")
+        self.console.print("-" * 60)
+
+        episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
+        if not episode:
+            raise ValueError(f"Episode ID {episode_id} 不存在")
+
+        # 查询字幕数量
+        cue_count = self.db.query(TranscriptCue).join(AudioSegment).filter(
+            AudioSegment.episode_id == episode_id
+        ).count()
+
+        self.console.print(f"Episode ID: {episode.id}")
+        self.console.print(f"标题: {episode.title}")
+        self.console.print(f"当前状态: {WorkflowStatus(episode.workflow_status).name}")
+        self.console.print(f"字幕数量: {cue_count}")
+        self.console.print(f"音频时长: {episode.duration:.1f} 秒")
+
+        self.episode = episode
+        return episode
+
     def create_episode_from_audio(self, audio_path: str) -> Episode:
         """从本地音频文件创建 Episode"""
         self.console.print()
@@ -329,6 +353,56 @@ class CompleteWorkflowTester:
 
         return file_path
 
+    def publish_to_notion(self) -> Optional[str]:
+        """Step 9: 发布到 Notion"""
+        self.console.print()
+        self.console.print("[bold cyan]Step 8: 发布到 Notion[/bold cyan]")
+        self.console.print("-" * 60)
+
+        try:
+            from app.services.publishers.notion import NotionPublisher
+
+            # 创建 NotionPublisher
+            publisher = NotionPublisher(db=self.db)
+
+            # 验证配置
+            if not publisher.validate_config():
+                self.console.print("  [yellow]警告: Notion API 配置无效或未设置[/yellow]")
+                self.console.print("  [yellow]跳过 Notion 发布（请设置 NOTION_API_KEY 环境变量）[/yellow]")
+                return None
+
+            # 发布 Episode
+            self.console.print(f"正在发布 Episode {self.episode.id} 到 Notion...")
+            result = publisher.publish_episode(self.episode)
+
+            if result.status == "success":
+                page_id = result.platform_record_id
+                clean_page_id = page_id.replace('-', '')
+                notion_url = f"https://www.notion.so/{clean_page_id}"
+
+                self.console.print(f"[green]发布成功！[/green]")
+                self.console.print(f"  Page ID: {page_id}")
+                self.console.print(f"  URL: {notion_url}")
+
+                # 更新 Episode 状态
+                self.episode.workflow_status = WorkflowStatus.PUBLISHED.value
+                self.db.commit()
+
+                return notion_url
+            else:
+                self.console.print(f"[red]发布失败: {result.error_message}[/red]")
+                return None
+
+        except ImportError:
+            self.console.print("  [yellow]警告: notion-client 未安装，跳过 Notion 发布[/yellow]")
+            self.console.print("  [yellow]请运行: pip install notion-client[/yellow]")
+            return None
+        except Exception as e:
+            self.console.print(f"[red]发布出错: {e}[/red]")
+            import traceback
+            self.console.print(traceback.format_exc())
+            return None
+
     def demo_parse_and_backfill(self, obsidian_path: Path) -> None:
         """Step 6: 演示解析和回填"""
         self.console.print()
@@ -416,17 +490,33 @@ class CompleteWorkflowTester:
 
     def run_complete_workflow(
         self,
-        audio_path: str,
+        audio_path: Optional[str] = None,
+        episode_id: Optional[int] = None,
         skip_proofreading: bool = False,
-        skip_marketing: bool = False
+        skip_marketing: bool = False,
+        skip_notion: bool = False
     ) -> Episode:
-        """运行完整工作流"""
+        """运行完整工作流
+
+        Args:
+            audio_path: 音频文件路径（与 episode_id 二选一）
+            episode_id: Episode ID（与 audio_path 二选一）
+            skip_proofreading: 跳过字幕校对
+            skip_marketing: 跳过营销文案生成
+            skip_notion: 跳过 Notion 发布
+        """
+        if not audio_path and not episode_id:
+            raise ValueError("必须提供 audio_path 或 episode_id")
+
         # 检查环境
         if not self.check_environment():
             raise RuntimeError("环境变量未设置")
 
-        # Step 1: 创建 Episode
-        self.create_episode_from_audio(audio_path)
+        # Step 1: 创建或加载 Episode
+        if episode_id:
+            self.load_episode_by_id(episode_id)
+        else:
+            self.create_episode_from_audio(audio_path)
 
         # Step 2: 转录
         self.transcribe_audio()
@@ -455,8 +545,13 @@ class CompleteWorkflowTester:
         if not skip_marketing:
             marketing_path = self.generate_marketing_doc()
 
+        # Step 9: 发布到 Notion（可选）
+        notion_url = None
+        if not skip_notion:
+            notion_url = self.publish_to_notion()
+
         # 显示总结
-        self._display_summary(obsidian_path, marketing_path)
+        self._display_summary(obsidian_path, marketing_path, notion_url)
 
         return self.episode
 
@@ -493,7 +588,7 @@ class CompleteWorkflowTester:
                 self.console.print(f"  [{cue.start_time:.1f}s] {cue.text[:40]}...")
                 self.console.print(f"    -> {t.translation[:60]}...")
 
-    def _display_summary(self, obsidian_path: Path, marketing_path: Optional[Path] = None) -> None:
+    def _display_summary(self, obsidian_path: Path, marketing_path: Optional[Path] = None, notion_url: Optional[str] = None) -> None:
         """显示测试总结"""
         self.console.print()
         self.console.print("[bold cyan]" + "=" * 60 + "[/bold cyan]")
@@ -507,9 +602,13 @@ class CompleteWorkflowTester:
         self.console.print(f"Obsidian 文档: {obsidian_path}")
         if marketing_path:
             self.console.print(f"营销文案: {marketing_path}")
+        if notion_url:
+            self.console.print(f"Notion 页面: {notion_url}")
         self.console.print()
         self.console.print("[bold]下一步:[/bold]")
         self.console.print("  1. 用 Obsidian 打开文档查看")
+        if notion_url:
+            self.console.print("  2. 在 Notion 中查看发布内容")
 
 
 def main():
@@ -517,19 +616,31 @@ def main():
     parser = argparse.ArgumentParser(
         description="完整工作流测试：从本地音频文件到发布",
     )
-    parser.add_argument("audio", help="音频文件路径")
+    parser.add_argument("audio", nargs="?", help="音频文件路径（与 --episode-id 二选一）")
+    parser.add_argument("--episode-id", type=int, help="直接使用已有 Episode ID")
     parser.add_argument("--skip-proofreading", action="store_true", help="跳过字幕校对")
     parser.add_argument("--skip-marketing", action="store_true", help="跳过营销文案生成")
+    parser.add_argument("--skip-notion", action="store_true", help="跳过 Notion 发布")
     parser.add_argument("--test-db", action="store_true", help="使用测试数据库")
 
     args = parser.parse_args()
+
+    # 验证参数
+    if not args.audio and not args.episode_id:
+        parser.error("必须提供 audio 文件路径或 --episode-id")
+
+    if args.audio and args.episode_id:
+        parser.error("audio 和 --episode-id 不能同时使用")
 
     console = Console()
 
     # 打印头部
     console.print()
     console.print("[bold cyan]EnglishPod3 Enhanced - 完整工作流测试[/bold cyan]")
-    console.print(f"[dim]音频文件: {args.audio}[/dim]")
+    if args.episode_id:
+        console.print(f"[dim]Episode ID: {args.episode_id}[/dim]")
+    else:
+        console.print(f"[dim]音频文件: {args.audio}[/dim]")
     if args.test_db:
         console.print("[yellow]数据库: 测试模式 (episodes_test.db)[/yellow]")
     console.print()
@@ -574,7 +685,8 @@ def main():
 
             # 运行完整工作流
             episode = tester.run_complete_workflow(
-                args.audio,
+                audio_path=args.audio,
+                episode_id=args.episode_id,
                 skip_proofreading=args.skip_proofreading,
                 skip_marketing=args.skip_marketing
             )

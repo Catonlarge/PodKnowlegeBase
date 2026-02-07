@@ -10,8 +10,8 @@ from pathlib import Path
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# 使用测试数据库
-os.environ["DATABASE_URL"] = "sqlite:///D:/programming_enviroment/EnglishPod-knowledgeBase/backend/data/episodes_test.db"
+# 使用生产数据库
+# os.environ["DATABASE_URL"] = "sqlite:///D:/programming_enviroment/EnglishPod-knowledgeBase/backend/data/episodes_test.db"
 
 # 设置 UTF-8 编码输出
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -62,9 +62,11 @@ def main():
         ).count()
         print(f"  总计: {total_translations}")
 
-        # 创建 AI 服务和翻译服务
-        ai_service = AIService(provider="moonshot")
-        translation_service = TranslationService(db, ai_service)
+        # 创建翻译服务（不传 api_key，让它从配置中读取）
+        translation_service = TranslationService(
+            db,
+            provider="moonshot"
+        )
 
         print("\n" + "=" * 70)
         print("开始批量翻译...")
