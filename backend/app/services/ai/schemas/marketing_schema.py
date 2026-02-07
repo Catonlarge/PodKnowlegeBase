@@ -20,9 +20,17 @@ class MarketingAngle(BaseModel):
     """
 
     angle_name: str = Field(..., min_length=2, max_length=20, description="营销角度名称")
-    title: str = Field(..., min_length=5, max_length=30, description="标题")
+    title: str = Field(..., min_length=5, description="标题")
     content: str = Field(..., min_length=200, max_length=800, description="正文内容")
     hashtags: List[str] = Field(..., min_length=3, max_length=10, description="标签列表")
+
+    @field_validator('title')
+    @classmethod
+    def truncate_title(cls, v):
+        """自动截断过长的标题到30字符"""
+        if len(v) > 30:
+            v = v[:30]
+        return v
 
     @field_validator('hashtags')
     @classmethod
@@ -37,9 +45,11 @@ class MarketingAngle(BaseModel):
             ValueError: If hashtag format is invalid
         """
         for tag in v:
-            if not tag.startswith('#'):
+            # Strip whitespace before checking
+            tag_clean = tag.strip()
+            if not tag_clean.startswith('#'):
                 raise ValueError(f'标签必须以#开头: {tag}')
-            if len(tag) > 20:
+            if len(tag_clean) > 20:
                 raise ValueError(f'标签过长(最多20字符): {tag}')
         return v
 

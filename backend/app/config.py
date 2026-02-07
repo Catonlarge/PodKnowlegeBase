@@ -118,15 +118,18 @@ OBSIDIAN_MARKETING_SUBDIR = get_config("obsidian.marketing_subdir", "Marketing")
 MOONSHOT_API_KEY = _get_env_key("MOONSHOT_API_KEY", required=True)
 MOONSHOT_BASE_URL = get_config("ai.moonshot.base_url", "https://api.moonshot.cn/v1")
 MOONSHOT_MODEL = get_config("ai.moonshot.model", "kimi-k2-turbo-preview")
+MOONSHOT_TIMEOUT = get_config("ai.moonshot.timeout", 120)
 
 # Zhipu GLM (Secondary AI Service)
 ZHIPU_API_KEY = _get_env_key("ZHIPU_API_KEY", required=True)
 ZHIPU_BASE_URL = get_config("ai.zhipu.base_url", "https://open.bigmodel.cn/api/paas/v4")
 ZHIPU_MODEL = get_config("ai.zhipu.model", "glm-4-plus")
+ZHIPU_TIMEOUT = get_config("ai.zhipu.timeout", 60)
 
 # Gemini (Google)
 GEMINI_API_KEY = _get_env_key("GEMINI_API_KEY", required=True)
 GEMINI_MODEL = get_config("ai.gemini.model", "gemini-2.5-flash")
+GEMINI_TIMEOUT = get_config("ai.gemini.timeout", 60)
 
 # Common AI Settings
 AI_QUERY_TIMEOUT = get_config("ai.query_timeout", 60)
@@ -181,7 +184,7 @@ def get_marketing_llm_config() -> dict:
     Get marketing service LLM configuration based on provider setting.
 
     Returns:
-        dict: Contains 'api_key', 'base_url', 'model' for the selected provider
+        dict: Contains 'provider', 'api_key', 'base_url', 'model' for the selected provider
 
     Raises:
         ValueError: If provider is not supported or API key is not set
@@ -190,18 +193,21 @@ def get_marketing_llm_config() -> dict:
 
     if provider == "zhipu":
         return {
+            "provider": "zhipu",
             "api_key": ZHIPU_API_KEY,
             "base_url": ZHIPU_BASE_URL,
             "model": ZHIPU_MODEL
         }
     elif provider == "moonshot":
         return {
+            "provider": "moonshot",
             "api_key": MOONSHOT_API_KEY,
             "base_url": MOONSHOT_BASE_URL,
             "model": MOONSHOT_MODEL
         }
     elif provider == "gemini":
         return {
+            "provider": "gemini",
             "api_key": GEMINI_API_KEY,
             "base_url": "https://generativelanguage.googleapis.com/v1beta",
             "model": GEMINI_MODEL

@@ -19,8 +19,8 @@ class TranslationItem(BaseModel):
     """
 
     cue_id: int = Field(..., ge=1, description="字幕ID")
-    original_text: str = Field(..., min_length=1, max_length=500, description="原文")
-    translated_text: str = Field(..., min_length=1, max_length=500, description="译文")
+    original_text: str = Field(..., min_length=1, description="原文")
+    translated_text: str = Field(..., min_length=1, description="译文")
 
 
 class TranslationResponse(BaseModel):

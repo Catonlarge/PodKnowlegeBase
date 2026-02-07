@@ -31,6 +31,7 @@ class MoonshotProviderAdapter(BaseProviderAdapter):
             base_url=kwargs.get("base_url"),
             api_key=kwargs.get("api_key"),
             temperature=kwargs.get("temperature", 0.7),
+            timeout=kwargs.get("timeout", 120),  # Default 120 seconds
         )
 
     def get_method_type(self) -> str:
