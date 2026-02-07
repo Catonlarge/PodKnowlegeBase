@@ -6,6 +6,40 @@
 
 ## 2026-02-07
 
+### Refactor - AI 服务迁移到 StructuredLLM 系统
+
+**修改文件:**
+- `app/services/subtitle_proofreading_service.py` - 迁移到 StructuredLLM
+- `app/services/segmentation_service.py` - 迁移到 StructuredLLM
+- `tests/unit/services/test_subtitle_proofreading_service.py` - 更新测试适配新 API
+
+**功能特性:**
+1. **SubtitleProofreadingService 迁移**
+   - 移除 dataclass `CorrectionSuggestion`，使用 Pydantic 模型
+   - 使用 `StructuredLLM` 替代直接 OpenAI API 调用
+   - 添加 `ProofreadingValidator` 业务验证器
+   - 添加 `@ai_retry` 装饰器实现自动重试
+   - 支持多提供商 (moonshot, zhipu, gemini)
+
+2. **SegmentationService 迁移**
+   - 移除 JSON 解析逻辑，使用 Pydantic `SegmentationResponse`
+   - 使用 `StructuredLLM` 替代直接 OpenAI API 调用
+   - 添加 `SegmentationValidator` 业务验证器
+   - 添加 `@ai_retry` 装饰器实现自动重试
+   - 支持多提供商 (moonshot, zhipu, gemini)
+
+**测试结果:**
+- SubtitleProofreadingService: 13/13 tests passing
+- SegmentationService: 9/9 tests passing
+
+**待完成 (P2 优先级):**
+- TranslationService 迁移到 StructuredLLM
+- MarketingService 迁移到 StructuredLLM
+
+---
+
+## 2026-02-07
+
 ### Added - AI 结构化输出系统 (Provider 适配器模式)
 
 **新增文件:**
