@@ -106,13 +106,12 @@ class ObsidianService:
         if not chapters:
             content = self._render_all_cues_content(episode_id, language_code)
 
-        markdown = (
-            f"{frontmatter}\n\n"
-            f"{header}\n\n"
-            f"{navigation}\n\n"
-            f"---\n\n"
-            f"{content}"
-        )
+        # 拼接 Markdown，处理 header 为空的情况
+        parts = [frontmatter]
+        if header:
+            parts.append(header)
+        parts.extend([navigation, "---", content])
+        markdown = "\n\n".join(parts)
 
         return markdown
 
@@ -468,9 +467,8 @@ class ObsidianService:
         )
 
     def _render_header(self, episode: Episode) -> str:
-        """生成概览（不包含主标题，因为文件名已显示）"""
-        summary = episode.ai_summary or "暂无概览"
-        return f"> **全文概览：** {summary}"
+        """生成概览（已废弃，返回空字符串）"""
+        return ""
 
     def _render_chapter_navigation(self, chapters: List[Chapter], episode: Episode) -> str:
         """生成章节导航表格（使用 display_title）"""
@@ -541,27 +539,58 @@ class ObsidianService:
 
     def _render_bilingual_table(self, cues: List[TranscriptCue], language_code: str) -> str:
         """
-        生成双语字幕区块（每个 Cue 一个独立区块）
+        生成双语字幕区块（按说话人分组）
 
         格式：
-        ### [MM:SS](cue://ID)
-        **Speaker**: Speaker名称
-        **英文**: English text...
-        **中文**: 中文翻译...
+        SPEAKER_01
+
+        [00:00](cue://1454) Welcome to The Tim Ferriss Show, I'm your host Tim Ferriss.
+
+        你好，欢迎来到XXXXX
+
+        [00:05](cue://1455) Today we're going to talk about how to learn anything faster.
+
+        今天我们要讨论的是怎么学习得更快
+
+        SPEAKER_00
+
+        [00:12](cue://1456) Hello，everyone！
+
+        大家好！
         """
-        sections = []
-        for cue in cues:
+        if not cues:
+            return "暂无字幕内容"
+
+        lines = []
+        current_speaker = None
+
+        for i, cue in enumerate(cues):
             translation = cue.get_translation(language_code)
             translation_text = translation if translation else "[未翻译]"
 
-            section = f"""{cue.obsidian_anchor}
-**Speaker**: {cue.speaker}
-**英文**: {cue.text}
+            # 说话人切换时
+            if cue.speaker != current_speaker:
+                # 如果不是第一个说话人，先空一行分隔
+                if current_speaker is not None:
+                    lines.append("")  # speaker切换时额外空一行
 
-**中文**: {translation_text}"""
-            sections.append(section)
+                # 添加说话人名称（加粗）
+                lines.append(f"**{cue.speaker}**")
+                lines.append("")  # speaker后空一行
+                current_speaker = cue.speaker
+            else:
+                # 同一个speaker，在英文前空一行（非第一个字幕）
+                if i > 0:
+                    lines.append("")
 
-        return "\n\n".join(sections)
+            # 添加英文字幕行（锚点 + 英文）
+            lines.append(f"{cue.obsidian_anchor} {cue.text}")
+            # 英文后空一行（中英分隔）
+            lines.append("")
+            # 添加中文翻译
+            lines.append(translation_text)
+
+        return "\n".join(lines)
 
     # ========================================================================
     # 私有辅助方法 - 解析
