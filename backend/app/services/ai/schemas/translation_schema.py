@@ -22,6 +22,25 @@ class TranslationItem(BaseModel):
     original_text: str = Field(..., min_length=1, description="原文")
     translated_text: str = Field(..., min_length=1, description="译文")
 
+    @field_validator('translated_text')
+    @classmethod
+    def validate_not_blank(cls, v):
+        """
+        验证译文非空且不全是空白字符
+
+        Args:
+            v: 翻译文本
+
+        Returns:
+            str: 验证通过的翻译文本
+
+        Raises:
+            ValueError: 翻译文本为空或仅包含空白字符
+        """
+        if not v or not v.strip():
+            raise ValueError('translated_text 不能为空或仅包含空白字符')
+        return v
+
 
 class TranslationResponse(BaseModel):
     """

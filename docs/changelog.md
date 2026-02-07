@@ -4,6 +4,73 @@
 
 ---
 
+## 2026-02-08
+
+### Fixed - TranslationService 边界情况修复
+
+**修改文件:**
+- `app/services/translation_service.py` - 修复边界情况处理
+- `app/services/ai/schemas/translation_schema.py` - 添加空白字符验证
+- `tests/unit/services/test_translation_service_edge_cases.py` - 新增边界情况测试 (14 个测试)
+
+**问题来源:**
+- 基于 [translation-alignment-code-review.md](phase-planning/translation-alignment-code-review.md) 代码审查文档
+
+**修复内容:**
+
+1. **None 值处理** (High Priority)
+   - 检测 AI 返回 content=None 情况
+   - 抛出明确错误信息："AI 返回了空响应 (content=None)"
+   - 防止 AttributeError 崩溃
+
+2. **空白翻译验证** (High Priority)
+   - Schema 层：添加 `validate_not_blank` 验证器
+   - Service 层：`_create_translation` 方法验证非空
+   - 防止空白字符串被保存为翻译内容
+
+3. **翻译长度截断** (Medium Priority)
+   - 限制最大翻译长度为 10,000 字符
+   - 超长翻译自动截断并记录警告日志
+
+4. **错位重复 cue_id 检查** (High Priority)
+   - 检测错位修复时是否产生重复 cue_id
+   - 拒绝可能存在双重错位的批次
+   - 抛出 ValueError："修复错位时发现重复 cue_id"
+
+5. **重试优化** (Medium Priority)
+   - 只重试失败的条目，避免重复翻译已成功的内容
+   - 记录已成功的 cue_id，重试时跳过
+   - 改进日志显示进度
+
+6. **fallback 数据丢失保护** (Medium Priority)
+   - 移除 `rollback()` 调用
+   - 依赖 `_create_translation` 的 UPDATE 逻辑
+   - 确保部分保存的数据不会丢失
+
+7. **异常状态残留保护** (Medium Priority)
+   - `_call_ai_for_batch` 异常时执行 `rollback()`
+   - 清理未提交的数据，避免状态不一致
+
+8. **Prompt 格式优化** (Low Priority)
+   - JSON 使用紧凑格式 `separators=(',', ':')`
+   - 减少 prompt 长度，降低 API 调用成本
+
+**测试覆盖:**
+- 14 个边界情况测试全部通过
+- 测试覆盖：None 值处理、空字符串验证、长度截断、重复检测、重试优化、异常清理
+
+**影响范围:**
+- `translation_service.py:619` - None 值处理
+- `translation_service.py:421-466` - 空字符串验证和长度截断
+- `translation_service.py:1040-1045` - 错位重复检测
+- `translation_service.py:253-314` - 重试优化
+- `translation_service.py:246-249` - fallback 数据丢失保护
+- `translation_service.py:959-961` - 异常状态残留保护
+- `translation_service.py:910` - Prompt 格式优化
+- `translation_schema.py:28-35` - Schema 空白字符验证
+
+---
+
 ## 2026-02-07
 
 ### Refactor - AI 服务迁移到 StructuredLLM 系统

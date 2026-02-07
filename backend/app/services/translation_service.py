@@ -243,7 +243,8 @@ class TranslationService:
                 else:
                     # 已到最后一级，回退到批次重试（50条/批，5轮）
                     logger.warning("所有批次大小都失败，回退到批次重试（50条/批，5轮）")
-                    self.db.rollback()
+                    # 移除 rollback()，依赖 _create_translation 的 UPDATE 逻辑
+                    # 重复调用不会创建重复记录，重试时会更新已保存的记录
                     fallback_count = self._fallback_translate_one_by_one(batch, language_code)
                     success_count += fallback_count
                     i += batch_size
@@ -259,6 +260,8 @@ class TranslationService:
         """
         尝试翻译单个批次（带重试）
 
+        优化：只重试失败的条目，避免重复翻译已成功的内容
+
         Args:
             batch: 待翻译的 Cue 列表
             language_code: 语言代码
@@ -269,10 +272,26 @@ class TranslationService:
         """
         max_attempts = config.max_retries + 1  # +1 因为第一次不算重试
 
+        # 记录已成功的 cue_id
+        successful_ids = set()
+        saved_count = 0
+
         for attempt in range(max_attempts):
             try:
+                # 只翻译失败的条目
+                failed_batch = [c for c in batch if c.id not in successful_ids]
+
+                if not failed_batch:
+                    # 全部成功
+                    return True, saved_count, []
+
+                logger.info(
+                    f"第 {attempt + 1} 次尝试，翻译 {len(failed_batch)} 条"
+                    f"（跳过已成功的 {len(successful_ids)} 条）"
+                )
+
                 # 调用 AI 批量翻译
-                result = self._call_ai_for_batch(batch, language_code)
+                result = self._call_ai_for_batch(failed_batch, language_code)
                 translations = result["translations"]
 
                 # 保存翻译结果
@@ -282,6 +301,8 @@ class TranslationService:
                         language_code,
                         trans["translation"]
                     )
+                    successful_ids.add(trans["cue_id"])
+                    saved_count += 1
 
                 # 成功
                 if attempt > 0:
@@ -289,14 +310,14 @@ class TranslationService:
                         f"批次 {config.batch_size} 在第 {attempt + 1} 次尝试成功"
                     )
 
-                return True, len(batch), []
+                return True, saved_count, []
 
             except ValueError as e:
                 # JSON 验证失败
                 if attempt < max_attempts - 1:
                     logger.warning(
                         f"批次 {config.batch_size} 第 {attempt + 1} 次尝试失败: {e}，"
-                        f"准备重试..."
+                        f"已成功 {len(successful_ids)} 条，准备重试剩余 {len(batch) - len(successful_ids)} 条..."
                     )
                     time.sleep(1)  # 等待 1 秒后重试
                     continue
@@ -304,14 +325,17 @@ class TranslationService:
                     logger.error(
                         f"批次 {config.batch_size} 重试 {config.max_retries} 次后仍失败: {e}"
                     )
-                    return False, 0, batch
+                    failed_cues = [c for c in batch if c.id not in successful_ids]
+                    return False, saved_count, failed_cues
 
             except Exception as e:
                 # 其他异常（网络错误等）
                 logger.error(f"批次 {config.batch_size} 发生异常: {e}")
-                return False, 0, batch
+                failed_cues = [c for c in batch if c.id not in successful_ids]
+                return False, saved_count, failed_cues
 
-        return False, 0, batch
+        failed_cues = [c for c in batch if c.id not in successful_ids]
+        return False, saved_count, failed_cues
 
     def translate_cue(
         self,
@@ -434,7 +458,23 @@ class TranslationService:
 
         Returns:
             Translation: 创建或更新的对象
+
+        Raises:
+            ValueError: 翻译内容为空或仅包含空白字符
         """
+        # 边界处理: 验证翻译内容非空
+        if not translated_text or not translated_text.strip():
+            raise ValueError(f"翻译内容为空: cue_id={cue_id}, language_code={language_code}")
+
+        # 边界处理: 限制翻译长度（防止数据库溢出）
+        MAX_TRANSLATION_LENGTH = 10000  # 10k 字符
+        if len(translated_text) > MAX_TRANSLATION_LENGTH:
+            logger.warning(
+                f"翻译过长 ({len(translated_text)} 字符)，"
+                f"截断到 {MAX_TRANSLATION_LENGTH}: cue_id={cue_id}"
+            )
+            translated_text = translated_text[:MAX_TRANSLATION_LENGTH]
+
         # 查找现有记录
         translation = self.db.query(Translation).filter(
             Translation.cue_id == cue_id,
@@ -616,7 +656,17 @@ class TranslationService:
                 temperature=0.3,
             )
 
-            translated_text = completion.choices[0].message.content.strip()
+            # 边界处理: 检查 content 是否为 None
+            content = completion.choices[0].message.content
+            if content is None:
+                raise ValueError("AI 返回了空响应 (content=None)")
+
+            translated_text = content.strip()
+
+            # 边界处理: 检查翻译是否为空字符串
+            if not translated_text:
+                raise ValueError("AI 返回了空白翻译")
+
             logger.debug(f"AI 翻译响应: {translated_text[:50]}...")
             return translated_text
 
@@ -857,7 +907,7 @@ class TranslationService:
 
 **输入字幕**：
 ```json
-{__import__('json').dumps(subtitles_data, ensure_ascii=False, indent=2)}
+{__import__('json').dumps(subtitles_data, ensure_ascii=False, separators=(',', ':'))}
 ```
 
 请返回符合以下 JSON 格式的翻译结果：
@@ -908,6 +958,8 @@ class TranslationService:
 
         except Exception as e:
             logger.error(f"AI 批量翻译调用失败: {e}")
+            # 边界处理: 清理未提交的数据，避免状态残留
+            self.db.rollback()
             raise  # 重新抛出异常，由上层重试逻辑处理
 
     def _validate_translation_response(
@@ -984,6 +1036,14 @@ class TranslationService:
                         logger.error(
                             f"  检测到错位: LLM 返回 cue_id={item.cue_id}，修复为 cue_id={correct_cue_id}"
                         )
+
+                        # 边界处理: 检查是否与已添加的 cue_id 重复（双重错位检测）
+                        if any(t["cue_id"] == correct_cue_id for t in translations):
+                            raise ValueError(
+                                f"修复错位时发现重复 cue_id={correct_cue_id}，"
+                                f"可能存在双重错位，拒绝整个批次"
+                            )
+
                         # 修复：保存到正确的 cue_id
                         translations.append({
                             "cue_id": correct_cue_id,
