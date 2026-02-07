@@ -32,6 +32,7 @@ class MoonshotProviderAdapter(BaseProviderAdapter):
             api_key=kwargs.get("api_key"),
             temperature=kwargs.get("temperature", 0.7),
             timeout=kwargs.get("timeout", 120),  # Default 120 seconds
+            max_tokens=kwargs.get("max_tokens", 32000),  # High limit for long subtitles
         )
 
     def get_method_type(self) -> str:
