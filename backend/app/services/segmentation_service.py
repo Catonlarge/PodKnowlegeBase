@@ -222,9 +222,6 @@ class SegmentationService:
         # 创建 Chapter 记录
         chapters = self._create_chapters(episode_id, response)
 
-        # 创建 Chapter 记录
-        chapters = self._create_chapters(episode_id, chapters_data)
-
         # 关联 TranscriptCue 到 Chapter
         self._associate_cues_to_chapters(episode_id, chapters)
 
