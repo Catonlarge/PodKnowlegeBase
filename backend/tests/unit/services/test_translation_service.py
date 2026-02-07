@@ -7,7 +7,10 @@ TranslationService 单元测试
 3. RLHF 双文本存储
 4. 多语言支持
 5. 错误处理和重试
+
+Updated for StructuredLLM migration with Pydantic validation.
 """
+import json
 import pytest
 from datetime import datetime
 from unittest.mock import Mock, patch
@@ -24,17 +27,9 @@ from app.enums.translation_status import TranslationStatus
 # ========================================================================
 
 @pytest.fixture
-def mock_ai_service():
-    """创建 Mock AI 服务"""
-    mock_ai = Mock()
-    mock_ai.provider = "test_provider"
-    return mock_ai
-
-
-@pytest.fixture
-def translation_service(test_session, mock_ai_service):
-    """创建 TranslationService 实例"""
-    return TranslationService(test_session, mock_ai_service)
+def translation_service(test_session):
+    """创建 TranslationService 实例（使用 mock API key）"""
+    return TranslationService(test_session, provider="moonshot", api_key=None)
 
 
 @pytest.fixture
@@ -86,19 +81,20 @@ def episode_with_cues(test_session):
 class TestInit:
     """测试 TranslationService 初始化"""
 
-    def test_init(self, test_session, mock_ai_service):
+    def test_init(self, test_session):
         """
-        Given: 数据库会话和 AI 服务
-        When: 创建 TranslationService
-        Then: 对象初始化成功，属性正确
+        Given: 数据库会话
+        When: 创建 TranslationService (无 API key)
+        Then: 对象初始化成功，structured_llm 为 None
         """
         # Act
-        service = TranslationService(test_session, mock_ai_service)
+        service = TranslationService(test_session, provider="moonshot", api_key=None)
 
         # Assert
         assert service.db == test_session
-        assert service.ai_service == mock_ai_service
+        assert service.structured_llm is None
         assert service.BATCH_SIZE == 50
+        assert service.provider == "moonshot"
 
 
 # ========================================================================
@@ -263,7 +259,7 @@ class TestCreateTranslation:
 class TestTranslateCue:
     """测试 translate_cue 方法"""
 
-    def test_translate_cue_success(self, translation_service, test_session, episode_with_cues, mock_ai_service):
+    def test_translate_cue_success(self, translation_service, test_session, episode_with_cues):
         """
         Given: TranscriptCue 和 Mock AI 服务
         When: 调用 translate_cue
@@ -285,7 +281,7 @@ class TestTranslateCue:
             assert translation.translation == "你好世界"
             assert translation.translation_status == TranslationStatus.COMPLETED.value
 
-    def test_translate_cue_dual_text_storage(self, translation_service, test_session, episode_with_cues, mock_ai_service):
+    def test_translate_cue_dual_text_storage(self, translation_service, test_session, episode_with_cues):
         """
         Given: 翻译完成
         When: 查询 Translation
@@ -305,7 +301,7 @@ class TestTranslateCue:
             assert translation.translation == "你好世界"
             assert translation.is_edited is False
 
-    def test_translate_cue_api_error(self, translation_service, test_session, episode_with_cues, mock_ai_service):
+    def test_translate_cue_api_error(self, translation_service, test_session, episode_with_cues):
         """
         Given: Mock AI 服务抛出异常
         When: 调用 translate_cue
@@ -329,7 +325,7 @@ class TestTranslateCue:
             assert translation.translation_status == TranslationStatus.FAILED.value
             assert "API Error" in translation.translation_error
 
-    def test_translate_cue_updates_timestamps(self, translation_service, test_session, episode_with_cues, mock_ai_service):
+    def test_translate_cue_updates_timestamps(self, translation_service, test_session, episode_with_cues):
         """
         Given: TranscriptCue
         When: 调用 translate_cue
@@ -359,7 +355,7 @@ class TestTranslateCue:
 class TestBatchTranslate:
     """测试 batch_translate 方法"""
 
-    def test_batch_translate_success(self, translation_service, episode_with_cues, mock_ai_service):
+    def test_batch_translate_success(self, translation_service, episode_with_cues):
         """
         Given: Episode 和 TranscriptCue 列表
         When: 调用 batch_translate
@@ -373,7 +369,7 @@ class TestBatchTranslate:
             # Assert
             assert count == 10
 
-    def test_batch_translate_resume_from_checkpoint(self, translation_service, episode_with_cues, test_session, mock_ai_service):
+    def test_batch_translate_resume_from_checkpoint(self, translation_service, episode_with_cues, test_session):
         """
         Given: 部分 Cue 已翻译
         When: 再次调用 batch_translate
@@ -400,7 +396,7 @@ class TestBatchTranslate:
             # Assert - 只翻译了 5 个（第 6-10 个）
             assert count == 5
 
-    def test_batch_translate_batch_processing(self, translation_service, episode_with_cues, test_session, mock_ai_service):
+    def test_batch_translate_batch_processing(self, translation_service, episode_with_cues, test_session):
         """
         Given: 120 个 TranscriptCue
         When: 调用 batch_translate
@@ -435,7 +431,7 @@ class TestBatchTranslate:
         finally:
             TranslationService.BATCH_SIZE = original_batch_size
 
-    def test_batch_translate_retry_failed(self, translation_service, episode_with_cues, test_session, mock_ai_service):
+    def test_batch_translate_retry_failed(self, translation_service, episode_with_cues, test_session):
         """
         Given: 部分翻译状态为 failed
         When: enable_retry=True 调用 batch_translate
@@ -460,11 +456,6 @@ class TestBatchTranslate:
             test_session.add(translation)
         test_session.flush()
 
-        mock_ai_service.query.return_value = {
-            "type": "sentence",
-            "content": {"translation": "新翻译"}
-        }
-
         # Act - 默认 enable_retry=True
         with patch.object(translation_service, '_call_ai_for_translation', return_value="新翻译"):
             count = translation_service.batch_translate(episode_with_cues.id, "zh")
@@ -477,7 +468,7 @@ class TestBatchTranslate:
             ).all()
             assert len(failed_translations) == 10  # 最终全部完成
 
-    def test_batch_translate_multiple_languages(self, translation_service, episode_with_cues, test_session, mock_ai_service):
+    def test_batch_translate_multiple_languages(self, translation_service, episode_with_cues, test_session):
         """
         Given: language_code='ja'
         When: 调用 batch_translate
@@ -498,7 +489,7 @@ class TestBatchTranslate:
             assert len(translations) == 10
             assert all(t.language_code == "ja" for t in translations)
 
-    def test_batch_translate_no_pending_cues(self, translation_service, episode_with_cues, test_session, mock_ai_service):
+    def test_batch_translate_no_pending_cues(self, translation_service, episode_with_cues, test_session):
         """
         Given: 所有 Cue 已翻译完成
         When: 调用 batch_translate
@@ -523,7 +514,335 @@ class TestBatchTranslate:
 
         # Assert
         assert count == 0
-        assert mock_ai_service.query.call_count == 0
+
+
+# ========================================================================
+# BatchRetry 测试组 - 批次重试机制
+# ========================================================================
+
+class TestBatchRetry:
+    """测试批次重试机制"""
+
+    def test_success_on_first_try(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: 10条Cue，LLM 返回正确 JSON
+        When: 调用 batch_translate
+        Then: 不重试，直接成功
+        """
+        # Arrange
+        mock_response = {
+            "translations": [
+                {"cue_id": c.id, "translation": f"翻译 {i}"}
+                for i, c in enumerate(test_session.query(TranscriptCue).all())
+            ]
+        }
+
+        # Act
+        with patch.object(translation_service, '_call_ai_for_batch', return_value=mock_response):
+            count = translation_service.batch_translate(episode_with_cues.id, "zh")
+
+        # Assert
+        assert count == 10
+
+    def test_success_on_second_try(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: 10条Cue，第1次返回非JSON，第2次返回正确JSON
+        When: 调用 batch_translate
+        Then: 重试1次后成功
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).all()
+        mock_response = {
+            "translations": [
+                {"cue_id": c.id, "translation": f"翻译 {i}"}
+                for i, c in enumerate(cues)
+            ]
+        }
+
+        # Act - 第1次失败，第2次成功
+        with patch.object(translation_service, '_call_ai_for_batch', side_effect=["invalid json", mock_response]):
+            count = translation_service.batch_translate(episode_with_cues.id, "zh")
+
+        # Assert
+        assert count == 10
+
+    def test_success_on_third_try(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: 10条Cue，前2次返回非JSON，第3次返回正确JSON
+        When: 调用 batch_translate (max_retries=2)
+        Then: 重试2次后成功，不降级
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).all()
+        mock_response = {
+            "translations": [
+                {"cue_id": c.id, "translation": f"翻译 {i}"}
+                for i, c in enumerate(cues)
+            ]
+        }
+
+        # Act - 前2次失败，第3次成功
+        with patch.object(translation_service, '_call_ai_for_batch', side_effect=["invalid", "json", mock_response]):
+            count = translation_service.batch_translate(episode_with_cues.id, "zh")
+
+        # Assert
+        assert count == 10
+
+    def test_all_retries_trigger_degradation(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: 10条Cue，3次都返回非JSON (max_retries=2)
+        When: 调用 batch_translate
+        Then: 降级到小批次或逐条翻译
+        """
+        # Arrange - Mock 批量翻译失败，逐条翻译成功
+        with patch.object(translation_service, '_call_ai_for_batch', side_effect=RuntimeError("JSON parse error")):
+            with patch.object(translation_service, '_call_ai_for_translation', return_value="翻译"):
+                # Act
+                count = translation_service.batch_translate(episode_with_cues.id, "zh")
+
+        # Assert - 应该回退到逐条翻译成功
+        assert count == 10
+
+
+# ========================================================================
+# JSONValidation 测试组 - JSON 验证逻辑
+# ========================================================================
+
+class TestJSONValidation:
+    """测试 JSON 验证逻辑"""
+
+    def test_valid_json_passes(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: LLM 返回正确格式的 JSON
+        When: 调用 _validate_and_parse_translations
+        Then: 返回翻译列表，不抛出异常
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(3).all()
+        valid_response = {
+            "translations": [
+                {"cue_id": cues[0].id, "translation": "翻译1"},
+                {"cue_id": cues[1].id, "translation": "翻译2"},
+                {"cue_id": cues[2].id, "translation": "翻译3"},
+            ]
+        }
+
+        # Act & Assert - 不应抛出异常
+        result = translation_service._validate_and_parse_translations(
+            json.dumps(valid_response), cues
+        )
+
+        assert len(result) == 3
+        assert result[0]["cue_id"] == cues[0].id
+        assert result[0]["translation"] == "翻译1"
+
+    def test_json_parse_error_raises_value_error(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: LLM 返回非 JSON 文本
+        When: 调用 _validate_and_parse_translations
+        Then: 抛出 ValueError，包含"JSON 解析失败"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(3).all()
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="JSON 解析失败"):
+            translation_service._validate_and_parse_translations("this is not json", cues)
+
+    def test_missing_translations_field_raises(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: JSON 缺少 translations 字段
+        When: 调用 _validate_and_parse_translations
+        Then: 抛出 ValueError，包含"缺少 'translations' 字段"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(3).all()
+        invalid_response = {"data": "something"}
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="缺少 'translations' 字段"):
+            translation_service._validate_and_parse_translations(
+                json.dumps(invalid_response), cues
+            )
+
+    def test_translations_not_list_raises(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: translations 不是列表类型
+        When: 调用 _validate_and_parse_translations
+        Then: 抛出 ValueError，包含"不是列表类型"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(3).all()
+        invalid_response = {"translations": "not a list"}
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="'translations' 不是列表类型"):
+            translation_service._validate_and_parse_translations(
+                json.dumps(invalid_response), cues
+            )
+
+    def test_wrong_cue_id_type_raises(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: cue_id 是字符串而非整数
+        When: 调用 _validate_and_parse_translations
+        Then: 抛出 ValueError，包含"类型错误"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(3).all()
+        invalid_response = {
+            "translations": [
+                {"cue_id": "not_a_number", "translation": "翻译"}
+            ]
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="'cue_id' 类型错误"):
+            translation_service._validate_and_parse_translations(
+                json.dumps(invalid_response), cues
+            )
+
+    def test_incomplete_translations_raises(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: 只返回部分翻译（3条输入只返回2条）
+        When: 调用 _validate_and_parse_translations
+        Then: 抛出 ValueError，包含"缺少.*条翻译"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(3).all()
+        incomplete_response = {
+            "translations": [
+                {"cue_id": cues[0].id, "translation": "翻译1"},
+                {"cue_id": cues[1].id, "translation": "翻译2"},
+                # 缺少第3条
+            ]
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="缺少 1 条翻译"):
+            translation_service._validate_and_parse_translations(
+                json.dumps(incomplete_response), cues
+            )
+
+    def test_duplicate_cue_id_raises(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: 返回重复的 cue_id
+        When: 调用 _validate_and_parse_translations
+        Then: 抛出 ValueError，包含"重复的 cue_id"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(2).all()
+        duplicate_response = {
+            "translations": [
+                {"cue_id": cues[0].id, "translation": "翻译1"},
+                {"cue_id": cues[0].id, "translation": "翻译2"},  # 重复
+            ]
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="重复的 cue_id"):
+            translation_service._validate_and_parse_translations(
+                json.dumps(duplicate_response), cues
+            )
+
+    def test_invalid_cue_id_raises(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: cue_id 不在输入列表中
+        When: 调用 _validate_and_parse_translations
+        Then: 抛出 ValueError，包含"无效的 cue_id"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(2).all()
+        invalid_response = {
+            "translations": [
+                {"cue_id": cues[0].id, "translation": "翻译1"},
+                {"cue_id": 99999, "translation": "翻译2"},  # 无效的 cue_id
+            ]
+        }
+
+        # Act & Assert
+        with pytest.raises(ValueError, match="无效的 cue_id"):
+            translation_service._validate_and_parse_translations(
+                json.dumps(invalid_response), cues
+            )
+
+    def test_markdown_wrapped_json_passes(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: JSON 被 ```json ``` 包裹
+        When: 调用 _validate_and_parse_translations
+        Then: 成功解析，返回翻译列表
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(2).all()
+        markdown_json = '''```json
+{
+    "translations": [
+        {"cue_id": ''' + str(cues[0].id) + ''', "translation": "翻译1"},
+        {"cue_id": ''' + str(cues[1].id) + ''', "translation": "翻译2"}
+    ]
+}
+```'''
+
+        # Act & Assert
+        result = translation_service._validate_and_parse_translations(markdown_json, cues)
+
+        assert len(result) == 2
+        assert result[0]["translation"] == "翻译1"
+
+
+# ========================================================================
+# ErrorClassification 测试组 - 错误分类
+# ========================================================================
+
+class TestErrorClassification:
+    """测试错误分类"""
+
+    def test_format_error_classification(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: JSON 解析错误、缺少字段、类型错误
+        When: 调用 _classify_validation_error
+        Then: 返回 "format"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(2).all()
+        error = ValueError("JSON 解析失败")
+
+        # Act
+        error_type = translation_service._classify_validation_error(error, cues)
+
+        # Assert
+        assert error_type == "format"
+
+    def test_incomplete_error_classification(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: 缺少部分翻译
+        When: 调用 _classify_validation_error
+        Then: 返回 "incomplete"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(2).all()
+        error = ValueError("缺少 1 条翻译")
+
+        # Act
+        error_type = translation_service._classify_validation_error(error, cues)
+
+        # Assert
+        assert error_type == "incomplete"
+
+    def test_error_classification(self, translation_service, episode_with_cues, test_session):
+        """
+        Given: 无效 cue_id、重复 cue_id
+        When: 调用 _classify_validation_error
+        Then: 返回 "error"
+        """
+        # Arrange
+        cues = test_session.query(TranscriptCue).limit(2).all()
+        error = ValueError("无效的 cue_id")
+
+        # Act
+        error_type = translation_service._classify_validation_error(error, cues)
+
+        # Assert
+        assert error_type == "error"
 
 
 # ========================================================================

@@ -213,11 +213,15 @@ class SegmentationService:
 
         logger.info(f"开始章节切分: episode_id={episode_id}, cues数量={len(cues)}")
 
-        # 调用 StructuredLLM 进行章节切分
-        response: SegmentationResponse = self._call_ai_for_segmentation(prompt, total_duration=episode.duration)
-
-        # 业务验证
-        response = SegmentationValidator.validate(response, total_duration=episode.duration)
+        # 调用 StructuredLLM 进行章节切分（带兜底）
+        try:
+            response: SegmentationResponse = self._call_ai_for_segmentation(prompt, total_duration=episode.duration)
+            # 业务验证
+            response = SegmentationValidator.validate(response, total_duration=episode.duration)
+        except Exception as e:
+            logger.warning(f"AI 章节切分失败: {e}，使用兜底方案（单章节）")
+            # 兜底：创建单个章节覆盖全部内容
+            response = self._create_fallback_response(episode)
 
         # 创建 Chapter 记录
         chapters = self._create_chapters(episode_id, response)
@@ -410,7 +414,7 @@ class SegmentationService:
             SegmentationResponse: AI 返回的章节数据
 
         Raises:
-            RuntimeError: AI 调用失败
+            Exception: AI 调用失败（由上层捕获并使用兜底方案）
         """
         if not self.structured_llm:
             raise ValueError("StructuredLLM 未初始化")
@@ -441,6 +445,28 @@ class SegmentationService:
         except Exception as e:
             logger.error(f"AI 调用失败: {e}")
             raise RuntimeError(f"章节切分 AI 调用失败: {e}") from e
+
+    def _create_fallback_response(self, episode: Episode) -> SegmentationResponse:
+        """
+        创建兜底单章节响应（当 AI 失败时使用）
+
+        Args:
+            episode: Episode 对象
+
+        Returns:
+            SegmentationResponse: 包含单个章节的响应
+        """
+        from app.services.ai.schemas.segmentation_schema import Chapter
+
+        total_duration = episode.duration
+        fallback_chapter = Chapter(
+            title=episode.title,  # 使用 episode.title
+            summary=f"AI 章节切分失败，使用默认单章节。总时长: {total_duration / 60:.1f} 分钟。",
+            start_time=0.0,
+            end_time=total_duration
+        )
+
+        return SegmentationResponse(chapters=[fallback_chapter])
 
     def _update_episode_status(self, episode_id: int) -> None:
         """

@@ -7,6 +7,8 @@ Marketing Service - 小红书风格营销文案生成服务
 3. 话题标签生成
 4. 完整文案生成
 5. 文案持久化
+
+Migrated to use StructuredLLM with Pydantic validation and retry logic.
 """
 import json
 import re
@@ -16,10 +18,19 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 
 from loguru import logger
 from sqlalchemy.orm import Session
-from openai import OpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.models import Episode, MarketingPost, TranscriptCue, AudioSegment, Chapter, Translation
-from app.config import get_marketing_llm_config, AI_QUERY_TIMEOUT
+from app.config import (
+    get_marketing_llm_config,
+    AI_QUERY_TIMEOUT,
+    MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL,
+    ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL,
+    GEMINI_API_KEY, GEMINI_MODEL
+)
+from app.services.ai.structured_llm import StructuredLLM
+from app.services.ai.schemas.marketing_schema import MultiAngleMarketingResponse, MarketingAngle
+from app.services.ai.retry import ai_retry
 
 
 @dataclass
@@ -40,19 +51,64 @@ class MarketingService:
     1. 为 Episode 生成小红书风格营销文案
     2. 提取核心观点和金句
     3. 生成吸引人的标题和话题标签
+
+    Uses StructuredLLM with Pydantic validation for reliable structured output.
     """
 
-    def __init__(self, db: Session, llm_service: Optional[Any] = None):
+    def __init__(
+        self,
+        db: Session,
+        provider: Optional[str] = None,
+        api_key: Optional[str] = None
+    ):
         """
         初始化服务
 
         Args:
             db: 数据库会话
-            llm_service: LLM 服务（用于文案生成，已废弃，保留兼容性）
+            provider: AI provider name (optional, defaults to config MARKETING_LLM_PROVIDER)
+            api_key: API key (optional, defaults to config)
         """
         self.db = db
-        self.llm_service = llm_service
-        # 获取营销服务专用的 LLM 配置（支持从 config.yaml 动态切换 provider）
+
+        # 获取营销服务专用的 LLM 配置
+        if provider is None:
+            provider = get_marketing_llm_config()["provider"] if hasattr(get_marketing_llm_config(), 'get') else "zhipu"
+
+        self.provider = provider
+
+        # Initialize StructuredLLM
+        if api_key is None:
+            llm_config = get_marketing_llm_config()
+            api_key = llm_config["api_key"]
+
+        try:
+            self.structured_llm = StructuredLLM(
+                provider=provider,
+                model=llm_config["model"],
+                api_key=api_key,
+                base_url=llm_config["base_url"]
+            )
+            logger.info(f"MarketingService: Initialized {provider} StructuredLLM")
+        except Exception as e:
+            logger.error(f"Failed to initialize StructuredLLM: {e}")
+            self.structured_llm = None
+
+        # 兼容旧配置
+        self._llm_config = get_marketing_llm_config()
+
+        # OpenAI client for non-structured outputs (titles, hashtags)
+        try:
+            from openai import OpenAI
+            self._openai_client = OpenAI(
+                api_key=api_key,
+                base_url=llm_config["base_url"]
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI client: {e}")
+            self._openai_client = None
+
+        # 保留旧的配置用于兼容
         self._llm_config = get_marketing_llm_config()
 
     # ========================================================================
@@ -153,15 +209,8 @@ class MarketingService:
         Returns:
             List[str]: 标题列表
         """
-        # 使用营销服务专用的 LLM 配置（支持动态切换 provider）
-        api_key = self._llm_config["api_key"]
-        if api_key and api_key != "your_api_key_here":
+        if self._openai_client:
             try:
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url=self._llm_config["base_url"]
-                )
-
                 system_prompt = """你是一位专业的小红书营销文案专家。
 请根据播客内容生成吸引人的小红书标题。
 
@@ -186,7 +235,7 @@ class MarketingService:
                 executor = ThreadPoolExecutor(max_workers=1)
 
                 def call_ai():
-                    completion = client.chat.completions.create(
+                    completion = self._openai_client.chat.completions.create(
                         model=self._llm_config["model"],
                         messages=[
                             {"role": "system", "content": system_prompt},
@@ -267,15 +316,8 @@ class MarketingService:
         Returns:
             List[str]: 标签列表
         """
-        # 使用营销服务专用的 LLM 配置（支持动态切换 provider）
-        api_key = self._llm_config["api_key"]
-        if api_key and api_key != "your_api_key_here":
+        if self._openai_client:
             try:
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url=self._llm_config["base_url"]
-                )
-
                 system_prompt = f"""你是一位专业的小红书营销文案专家。
 请根据播客内容生成相关的话题标签。
 
@@ -297,7 +339,7 @@ class MarketingService:
                 executor = ThreadPoolExecutor(max_workers=1)
 
                 def call_ai():
-                    completion = client.chat.completions.create(
+                    completion = self._openai_client.chat.completions.create(
                         model=self._llm_config["model"],
                         messages=[
                             {"role": "system", "content": system_prompt},
@@ -313,7 +355,6 @@ class MarketingService:
                     executor.shutdown(wait=False)
 
                     # 解析返回的标签列表
-                    # 查找所有以 # 开头的标签
                     hashtags = re.findall(r'#[\w\u4e00-\u9fff]+', response_text)
                     return hashtags[:max_tags]
 
@@ -471,6 +512,7 @@ class MarketingService:
 
         return angle_copies
 
+    @ai_retry(max_retries=2, initial_delay=1.0, retry_on=(ValueError, Exception))
     def _call_llm_for_multi_angle_content(
         self,
         episode: Episode,
@@ -478,7 +520,7 @@ class MarketingService:
         transcripts_text: str
     ) -> List[MarketingCopy]:
         """
-        调用 LLM 生成3个不同角度的小红书风格文案
+        调用 LLM 生成3个不同角度的小红书风格文案（使用 StructuredLLM）
 
         Args:
             episode: Episode 对象
@@ -487,46 +529,46 @@ class MarketingService:
 
         Returns:
             List[MarketingCopy]: 3个不同角度的文案对象
+
+        Raises:
+            ValueError: StructuredLLM 初始化失败或验证失败（触发 @ai_retry）
+            Exception: 其他异常（触发 @ai_retry）
         """
-        # 使用营销服务专用的 LLM 配置
-        api_key = self._llm_config["api_key"]
-        if api_key and api_key != "your_api_key_here":
-            try:
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url=self._llm_config["base_url"]
-                )
+        if not self.structured_llm:
+            logger.error("StructuredLLM 未初始化，使用备用方案")
+            return self._generate_fallback_multi_angle_copy(episode, key_quotes)
 
-                # 格式化金句引用
-                quotes_text = ""
-                if key_quotes:
-                    quotes_text = "\n".join([f"• {quote[:100]}..." if len(quote) > 100 else f"• {quote}" for quote in key_quotes[:3]])
+        # 格式化金句引用
+        quotes_text = ""
+        if key_quotes:
+            quotes_text = "\n".join([
+                f"• {quote[:100]}..." if len(quote) > 100 else f"• {quote}"
+                for quote in key_quotes[:3]
+            ])
 
-                system_prompt = """你是一位专业的小红书营销文案专家。
+        system_prompt = """你是一位专业的小红书营销文案专家。
 请根据播客完整字幕内容，生成 3 个不同角度的营销文案版本。
 
-【核心原则】每个角度都必须基于完整的字幕内容，而不是按章节拆分】
+【核心原则】每个角度都必须基于完整的字幕内容，而不是按章节拆分
 
 【重要约束】
 1. 必须严格基于字幕内容生成，不得编造字幕中没有的信息
 2. 只能提炼、重组、润色字幕中的内容
-3. 每个角度都从完整内容出发，选择不同的切入点，而不是只选取部分章节
+3. 每个角度都从完整内容出发，选择不同的切入点
 4. 所有数据、案例、观点必须来自字幕原文
-5. 【禁止按章节拆分角度】比如不能是"角度1讲第一章，角度2讲第二章"，这是错误的
 
 【正确的角度示例】
-- 如果内容包含法律、写作、心理三个方面，则三个角度可以是：
+如果内容包含法律、写作、心理三个方面，则三个角度可以是：
   * 角度1（产品向）：产品经理是怎么思考的
   * 角度2（个人学习向）：怎么用AI越狱
   * 角度3（职场向/商业向）：怎么拓展第二产品
-  每个角度都引用完整内容中的相关部分，而不是只截取某一章
 
 【任务】
-分析上述字幕内容，定义 3 个不同的内容角度，然后为每个角度生成：
-1. 角度名称（4-8字，简洁明了）
-2. 该角度对应的标题（包含emoji，30字以内）
-3. 该角度的正文内容（300-500字）
-4. 该角度的标签（5个，以#开头）
+分析字幕内容，定义 3 个不同的内容角度，为每个角度生成：
+1. angle_name: 角度名称（4-8字，简洁明了）
+2. title: 标题（包含emoji，30字以内）
+3. content: 正文内容（300-500字）
+4. hashtags: 标签列表（5个，以#开头）
 
 【正文要求】
 - 开头简洁有力，直接点题
@@ -534,39 +576,29 @@ class MarketingService:
 - 内容分段清晰，使用项目符号
 - 突出"干货"和"价值"
 - 结尾要有 CTA（点赞收藏关注）
-- 不要使用 Markdown 格式（不要有 ## 标题等）
 
-【输出格式】（请严格按此格式输出）
----
-【角度1】<角度名称>
-标题：<标题>
-正文：
-<正文内容>
-标签：<标签1> <标签2> <标签3> <标签4> <标签5>
+【输出格式】
+必须返回有效的 JSON 格式，包含以下结构：
+{
+  "angles": [
+    {
+      "angle_name": "产品思维",
+      "title": "🎯 产品经理的思考方式",
+      "content": "正文内容...",
+      "hashtags": ["#产品思维", "#职场干货", ...]
+    },
+    ...
+  ]
+}"""
 
----
-【角度2】<角度名称>
-标题：<标题>
-正文：
-<正文内容>
-标签：<标签1> <标签2> <标签3> <标签4> <标签5>
+        # DEBUG: 验证字幕内容是否完整传递
+        logger.info(
+            f"Episode {episode.id} 字幕统计: "
+            f"总行数={len(transcripts_text.split(chr(10)))}, "
+            f"总字符数={len(transcripts_text)}"
+        )
 
----
-【角度3】<角度名称>
-标题：<标题>
-正文：
-<正文内容>
-标签：<标签1> <标签2> <标签3> <标签4> <标签5>
-
----
-
-请生成 3 个不同角度的营销文案："""
-
-                # DEBUG: 验证字幕内容是否完整传递
-                logger.info(f"Episode {episode.id} 字幕统计: 总行数={len(transcripts_text.split(chr(10)))}, 总字符数={len(transcripts_text)}")
-                logger.info(f"字幕内容前300字符预览: {transcripts_text[:300]}...")
-
-                user_prompt = f"""播客标题：{episode.title}
+        user_prompt = f"""播客标题：{episode.title}
 播客摘要：{episode.ai_summary or '暂无摘要'}
 
 核心金句：
@@ -575,146 +607,71 @@ class MarketingService:
 完整字幕内容：
 {transcripts_text}
 
-请根据以上完整字幕内容生成 3 个不同角度的营销文案："""
+请根据以上完整字幕内容生成 3 个不同角度的营销文案 JSON："""
 
-                logger.info(f"发送给 LLM 的 prompt 总长度: {len(system_prompt) + len(user_prompt)} 字符")
+        logger.info(
+            f"发送给 LLM 的 prompt 总长度: "
+            f"{len(system_prompt) + len(user_prompt)} 字符"
+        )
 
-                executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            # 获取支持结构化输出的 LLM
+            structured_llm = self.structured_llm.with_structured_output(
+                schema=MultiAngleMarketingResponse
+            )
 
-                def call_ai():
-                    completion = client.chat.completions.create(
-                        model=self._llm_config["model"],
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        temperature=0.8,
-                    )
-                    return completion.choices[0].message.content
+            # 调用 AI - 验证失败会抛出 ValueError，触发 @ai_retry
+            result: MultiAngleMarketingResponse = structured_llm.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
 
-                try:
-                    future = executor.submit(call_ai)
-                    response_text = future.result(timeout=AI_QUERY_TIMEOUT * 2)  # 增加超时时间
-                    executor.shutdown(wait=False)
+            # 转换为 MarketingCopy 列表
+            return self._convert_structured_response_to_marketing_copy(
+                result, episode.id
+            )
 
-                    # 解析3个角度的文案
-                    return self._parse_multi_angle_response(response_text, episode.id)
+        except Exception as e:
+            logger.error(f"AI 调用失败: {e}，直接使用摘要兜底")
+            # ✅ 直接使用摘要兜底，不做部分解析
+            return self._generate_fallback_multi_angle_copy(episode, key_quotes)
 
-                except FutureTimeoutError:
-                    logger.error("AI 多角度文案生成超时，使用备用方案")
-                    executor.shutdown(wait=False)
-                except Exception as e:
-                    logger.error(f"AI 多角度文案生成失败: {e}，使用备用方案")
-
-            except Exception as e:
-                logger.error(f"AI 多角度文案生成初始化失败: {e}，使用备用方案")
-
-        # 备用方案：返回3个通用版本
-        return self._generate_fallback_multi_angle_copy(episode, key_quotes)
-
-    def _parse_multi_angle_response(self, response_text: str, episode_id: int) -> List[MarketingCopy]:
+    def _convert_structured_response_to_marketing_copy(
+        self,
+        response: MultiAngleMarketingResponse,
+        episode_id: int
+    ) -> List[MarketingCopy]:
         """
-        解析 LLM 返回的多角度文案响应
+        将结构化响应转换为 MarketingCopy 列表
 
         Args:
-            response_text: LLM 返回的原始文本
+            response: MultiAngleMarketingResponse 对象（已通过 Pydantic 验证）
             episode_id: Episode ID
 
         Returns:
-            List[MarketingCopy]: 解析后的文案对象列表
+            List[MarketingCopy]: 3个不同角度的文案对象
         """
         angle_copies = []
 
-        # DEBUG: 输出原始响应
-        logger.debug(f"LLM 原始响应长度: {len(response_text)}")
-        logger.debug(f"LLM 原始响应前500字符: {response_text[:500]}")
-
-        # 按分隔符分割（支持多种格式：---, —, === 等）
-        # 先尝试使用不同的分隔符
-        for separator_pattern in [r'---+', r'—{3,}', r'===+', r'\n---\n', r'\n—{3,}\n']:
-            angle_blocks = re.split(separator_pattern, response_text)
-            valid_blocks = [b for b in angle_blocks if b.strip() and self._has_angle_marker(b)]
-            logger.debug(f"分隔符 {separator_pattern}: 总块数={len(angle_blocks)}, 有效块数={len(valid_blocks)}")
-            if len(valid_blocks) >= 2:
-                logger.debug(f"使用分隔符: {separator_pattern}")
-                break
-
-        for block in angle_blocks:
-            if not block.strip():
-                continue
-
-            # 提取角度名称
-            angle_match = re.search(r'【角度[123]】(.+?)(?:\n|$)', block)
-            if not angle_match:
-                angle_match = re.search(r'角度[123][:：](.+?)(?:\n|$)', block)
-
-            angle_name = angle_match.group(1).strip() if angle_match else f"角度{len(angle_copies) + 1}"
-
-            # 提取标题
-            title_match = re.search(r'标题[：:](.+?)(?:\n|$)', block)
-            title = title_match.group(1).strip() if title_match else f"文案{len(angle_copies) + 1}"
-
-            # 提取标签
-            tags_match = re.search(r'标签[：:](.+?)(?:\n|$)', block)
-            hashtags = []
-            if tags_match:
-                hashtags = re.findall(r'#[\w\u4e00-\u9fff]+', tags_match.group(1))
-            if not hashtags:
-                hashtags = ["#播客推荐", "#内容分享"]
-
-            # 提取正文
-            content_match = re.search(r'正文[：:]\s*\n(.+)', block, re.DOTALL)
-            if content_match:
-                content = content_match.group(1).strip()
-            else:
-                # 如果没有"正文："标记，尝试提取其他内容
-                lines = block.split('\n')
-                content_lines = []
-                for line in lines:
-                    line = line.strip()
-                    # 跳过角度名、标题、标签行
-                    if any(line.startswith(prefix) for prefix in ['【角度', '角度', '标题', '标签']):
-                        continue
-                    if line:
-                        content_lines.append(line)
-                content = '\n'.join(content_lines).strip() if content_lines else "内容生成中..."
-
-            # 移除可能的 trailing separators
-            content = re.split(r'[\n—-]{3,}\s*\n*', content)[0].strip()
-
-            # 只有当内容有效时才添加
-            if content and len(content) > 10 and content != "内容生成中...":
-                angle_copies.append(MarketingCopy(
-                    title=title,
-                    content=content,
-                    hashtags=hashtags,
-                    key_quotes=[],
-                    metadata={
-                        "episode_id": episode_id,
-                        "platform": "xiaohongshu",
-                        "angle_tag": angle_name
-                    }
-                ))
-
-        # 确保有3个版本
-        while len(angle_copies) < 3:
+        for angle in response.angles:
             angle_copies.append(MarketingCopy(
-                title=f"🎧 文案版本{len(angle_copies) + 1}",
-                content="感谢观看，欢迎点赞收藏关注！",
-                hashtags=["#播客推荐", "#内容分享"],
+                title=angle.title,
+                content=angle.content,
+                hashtags=angle.hashtags,
                 key_quotes=[],
                 metadata={
                     "episode_id": episode_id,
                     "platform": "xiaohongshu",
-                    "angle_tag": f"版本{len(angle_copies) + 1}"
+                    "angle_tag": angle.angle_name
                 }
             ))
 
-        return angle_copies[:3]
+        logger.info(
+            f"成功转换 {len(angle_copies)} 个结构化角度文案: "
+            f"{[a.angle_name for a in response.angles]}"
+        )
 
-    def _has_angle_marker(self, text: str) -> bool:
-        """检查文本是否包含角度标记"""
-        return bool(re.search(r'【角度[123]】|角度[123][:：]', text))
+        return angle_copies
 
     def _generate_fallback_multi_angle_copy(
         self,
@@ -724,34 +681,35 @@ class MarketingService:
         """
         生成备用多角度文案（当 LLM 调用失败时）
 
+        ✅ 使用 episode.ai_summary 作为兜底内容
+
         Args:
             episode: Episode 对象
             key_quotes: 金句列表
 
         Returns:
-            List[MarketingCopy]: 3个备用文案对象
+            List[MarketingCopy]: 单个备用文案对象（基于摘要）
         """
-        fallback_angles = [
-            ("干货分享", f"分享一个关于{episode.title}的实用方法，亲测有效！\n\n✅ 核心观点\n这个话题真的很有意思，让我深思了很久。\n\n✅ 实践建议\n特别是在实际应用中，你会发现很多细节值得注意。\n\n💡 重点提示\n{key_quotes[0] if key_quotes else '记得多思考，多实践！'}\n\n建议收藏起来慢慢看，有问题评论区见！"),
-            ("情感共鸣", f"听完这期{episode.title}，我感触很深...\n\n有时候我们需要的不是答案，而是提出问题的勇气。\n\n{key_quotes[1] if len(key_quotes) > 1 else key_quotes[0] if key_quotes else '分享给你，希望能给你一些启发'}\n\n点赞收藏关注，分享更多暖心内容！"),
-            ("趣味科普", f"你知道吗？{episode.title}还有这些冷知识！\n\n🔥 趣味事实1\n可能会让你大吃一惊！\n\n🔥 趣味事实2\n原来还可以这样理解！\n\n评论区告诉我你还想知道什么？\n点赞收藏关注，下期更精彩！")
-        ]
+        # 使用 episode.ai_summary 或 episode.title 作为内容
+        content = episode.ai_summary or episode.title
 
-        copies = []
-        for angle_name, content in fallback_angles:
-            copies.append(MarketingCopy(
-                title=f"🎧 {episode.title}",
-                content=content,
-                hashtags=["#播客推荐", "#内容分享"],
-                key_quotes=key_quotes,
-                metadata={
-                    "episode_id": episode.id,
-                    "platform": "xiaohongshu",
-                    "angle_tag": angle_name
-                }
-            ))
+        # 限制标题长度
+        title = episode.title[:30] if len(episode.title) > 30 else episode.title
 
-        return copies
+        fallback_copy = MarketingCopy(
+            title=title,
+            content=content,
+            hashtags=["#播客", "#学习", "#英语"],
+            key_quotes=key_quotes,
+            metadata={
+                "episode_id": episode.id,
+                "platform": "xiaohongshu",
+                "angle_tag": "默认",
+                "fallback": True
+            }
+        )
+
+        return [fallback_copy]
 
     def _call_llm_for_xiaohongshu_content(
         self,
@@ -771,19 +729,15 @@ class MarketingService:
         # 获取完整的字幕内容（英文+中文翻译）
         transcripts_text = self._get_full_transcripts(episode.id)
 
-        # 使用营销服务专用的 LLM 配置（支持动态切换 provider）
-        api_key = self._llm_config["api_key"]
-        if api_key and api_key != "your_api_key_here":
+        if self._openai_client:
             try:
-                client = OpenAI(
-                    api_key=api_key,
-                    base_url=self._llm_config["base_url"]
-                )
-
                 # 格式化金句引用
                 quotes_text = ""
                 if key_quotes:
-                    quotes_text = "\n".join([f"• {quote[:100]}..." if len(quote) > 100 else f"• {quote}" for quote in key_quotes[:3]])
+                    quotes_text = "\n".join([
+                        f"• {quote[:100]}..." if len(quote) > 100 else f"• {quote}"
+                        for quote in key_quotes[:3]
+                    ])
 
                 system_prompt = """你是一位专业的小红书营销文案专家。
 请根据播客完整字幕内容生成小红书风格的文章正文。
@@ -828,7 +782,7 @@ class MarketingService:
                 executor = ThreadPoolExecutor(max_workers=1)
 
                 def call_ai():
-                    completion = client.chat.completions.create(
+                    completion = self._openai_client.chat.completions.create(
                         model=self._llm_config["model"],
                         messages=[
                             {"role": "system", "content": system_prompt},

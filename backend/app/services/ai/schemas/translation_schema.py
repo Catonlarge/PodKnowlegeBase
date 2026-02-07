@@ -5,7 +5,7 @@ This module defines Pydantic models for translation service.
 These models enforce strict validation on AI-generated translations.
 """
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Literal
+from typing import List
 
 
 class TranslationItem(BaseModel):
@@ -14,17 +14,13 @@ class TranslationItem(BaseModel):
 
     Attributes:
         cue_id: Subtitle cue ID
-        original_text: Original text
+        original_text: Original text (for verification)
         translated_text: Translated text
-        direction: Translation direction (en_to_zh or zh_to_en)
     """
 
     cue_id: int = Field(..., ge=1, description="字幕ID")
     original_text: str = Field(..., min_length=1, max_length=500, description="原文")
     translated_text: str = Field(..., min_length=1, max_length=500, description="译文")
-    direction: Literal["en_to_zh", "zh_to_en"] = Field(
-        ..., description="翻译方向: en_to_zh (英译中) 或 zh_to_en (中译英)"
-    )
 
 
 class TranslationResponse(BaseModel):
