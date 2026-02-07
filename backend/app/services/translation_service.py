@@ -9,6 +9,7 @@ Translation Service - 翻译服务
 5. 错误处理和重试
 """
 import logging
+import time
 from datetime import datetime
 from typing import List
 
@@ -105,9 +106,13 @@ class TranslationService:
                 try:
                     self.translate_cue(cue, language_code)
                     success_count += 1
+                    # API 调用之间添加延迟，避免限流（每次翻译后暂停 0.5 秒）
+                    time.sleep(0.5)
                 except Exception as e:
                     logger.error(f"翻译失败: cue_id={cue.id}, error={e}")
                     # 错误已在 translate_cue 中记录，继续处理下一个
+                    # 失败后也添加延迟，避免连续失败触发限流
+                    time.sleep(1)
 
         logger.info(f"批量翻译完成: episode_id={episode_id}, 成功={success_count}/{total_cues}")
 
