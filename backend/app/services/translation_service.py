@@ -27,7 +27,8 @@ from app.enums.translation_status import TranslationStatus
 from app.config import (
     MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL,
     ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL,
-    GEMINI_API_KEY, GEMINI_MODEL
+    GEMINI_API_KEY, GEMINI_MODEL,
+    MOONSHOT_TIMEOUT, ZHIPU_TIMEOUT, GEMINI_TIMEOUT
 )
 from app.services.ai.structured_llm import StructuredLLM
 from app.services.ai.schemas.translation_schema import TranslationResponse
@@ -121,22 +122,30 @@ class TranslationService:
                 api_key = MOONSHOT_API_KEY
                 base_url = base_url or MOONSHOT_BASE_URL
                 model = model or MOONSHOT_MODEL
+                timeout = MOONSHOT_TIMEOUT
             elif provider == "zhipu":
                 api_key = ZHIPU_API_KEY
                 base_url = base_url or ZHIPU_BASE_URL
                 model = model or ZHIPU_MODEL
+                timeout = ZHIPU_TIMEOUT
             elif provider == "gemini":
                 api_key = GEMINI_API_KEY
                 model = model or GEMINI_MODEL
+                timeout = GEMINI_TIMEOUT
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
+        else:
+            timeout = MOONSHOT_TIMEOUT if provider == "moonshot" else (
+                ZHIPU_TIMEOUT if provider == "zhipu" else GEMINI_TIMEOUT
+            )
 
         try:
             self.structured_llm = StructuredLLM(
                 provider=provider,
                 model=model,
                 api_key=api_key,
-                base_url=base_url
+                base_url=base_url,
+                timeout=timeout
             )
             logger.info(f"TranslationService: Initialized {provider} StructuredLLM")
         except Exception as e:
@@ -234,6 +243,7 @@ class TranslationService:
                 else:
                     # 已到最后一级，回退到批次重试（50条/批，5轮）
                     logger.warning("所有批次大小都失败，回退到批次重试（50条/批，5轮）")
+                    self.db.rollback()
                     fallback_count = self._fallback_translate_one_by_one(batch, language_code)
                     success_count += fallback_count
                     i += batch_size
@@ -846,9 +856,11 @@ class TranslationService:
 4. cue_id 和 original_text 必须与输入完全一致
 
 **输入字幕**：
+```json
 {__import__('json').dumps(subtitles_data, ensure_ascii=False, indent=2)}
+```
 
-请返回翻译结果："""
+请返回符合以下 JSON Schema 的翻译结果："""
 
         logger.info(f"调用 AI 批量翻译 {len(cues)} 条字幕...")
 
@@ -910,6 +922,16 @@ class TranslationService:
         # 构建原始 cue 文本映射
         cue_text_map = {cue.id: cue.text for cue in cues}
 
+        # 构建文本到 cue_id 的反向映射（处理重复文本）
+        from collections import defaultdict
+        text_to_cue_ids = defaultdict(list)
+        for cue in cues:
+            text_to_cue_ids[cue.text].append(cue.id)
+
+        # 统计变量
+        misalignment_count = 0
+        duplicate_text_count = 0
+
         for item in response.translations:
             # 验证 cue_id 在有效范围内
             if item.cue_id not in valid_cue_ids:
@@ -918,16 +940,79 @@ class TranslationService:
             # 验证 original_text 与原始文本匹配
             original_text = cue_text_map.get(item.cue_id, "")
             if item.original_text != original_text:
-                # 如果不匹配，使用原始文本
+                # 如果不匹配，检查是否是错位问题
                 logger.warning(
-                    f"cue_id {item.cue_id} 的 original_text 不匹配，"
-                    f"使用原始文本: '{original_text[:30]}...'"
+                    f"cue_id {item.cue_id} 的 original_text 不匹配！\n"
+                    f"  期望: '{original_text[:50]}...'\n"
+                    f"  实际: '{item.original_text[:50]}...'"
                 )
+
+                # 尝试通过 original_text 找到正确的 cue_id
+                correct_cue_ids = text_to_cue_ids.get(item.original_text)
+                if correct_cue_ids:
+                    # 区分单匹配和多匹配场景
+                    if len(correct_cue_ids) == 1:
+                        # 场景 1: 唯一匹配，真正的错位
+                        correct_cue_id = correct_cue_ids[0]
+                        logger.debug(
+                            f"  通过 original_text 找到唯一匹配: cue_id={correct_cue_id}"
+                        )
+                    else:
+                        # 场景 2: 重复文本，取第一个
+                        correct_cue_id = correct_cue_ids[0]
+                        duplicate_text_count += 1
+                        logger.warning(
+                            f"  original_text 对应 {len(correct_cue_ids)} 个重复 cue_id: {correct_cue_ids}\n"
+                            f"  将使用第一个: cue_id={correct_cue_id}（翻译内容相同，不影响结果）"
+                        )
+
+                    if correct_cue_id != item.cue_id:
+                        misalignment_count += 1
+                        logger.error(
+                            f"  检测到错位: LLM 返回 cue_id={item.cue_id}，修复为 cue_id={correct_cue_id}"
+                        )
+                        # 修复：保存到正确的 cue_id
+                        translations.append({
+                            "cue_id": correct_cue_id,
+                            "translation": item.translated_text
+                        })
+                        continue
+
+                # 无法找到匹配 - 这可能是 LLM 错误，拒绝此翻译
+                # 计算文本相似度，如果是轻微差异（如标点、空格），可以接受
+                original_lower = original_text.lower().strip()
+                item_lower = item.original_text.lower().strip()
+
+                # 检查是否是子串关系（允许 80% 相似度）
+                is_substring = False
+                if len(item_lower) > 0 and len(original_lower) > 0:
+                    if item_lower in original_lower or original_lower in item_lower:
+                        similarity = max(len(item_lower), len(original_lower)) / min(len(item_lower), len(original_lower))
+                        if similarity <= 1.25:  # 长度差异小于 25%
+                            is_substring = True
+
+                if is_substring:
+                    # 轻微差异，接受 LLM 的映射
+                    logger.debug(f"  original_text 有轻微差异但可接受，使用 LLM 返回的 cue_id={item.cue_id}")
+                else:
+                    # 严重不匹配，拒绝
+                    raise ValueError(
+                        f"cue_id {item.cue_id} 的 original_text 严重不匹配且无法找到正确的映射！\n"
+                        f"  期望: '{original_text[:100]}...'\n"
+                        f"  实际: '{item.original_text[:100]}...'"
+                    )
 
             translations.append({
                 "cue_id": item.cue_id,
                 "translation": item.translated_text
             })
+
+        # 输出统计摘要
+        if misalignment_count > 0 or duplicate_text_count > 0:
+            logger.info(
+                f"验证摘要: 修复 {misalignment_count} 处错位，"
+                f"处理 {duplicate_text_count} 处重复文本"
+            )
 
         # 验证完整性：所有 cue_id 都有翻译
         returned_ids = {t["cue_id"] for t in translations}
