@@ -3,35 +3,37 @@ SubtitleProofreadingService
 
 Service for proofreading Whisper transcribed subtitles using LLM.
 Scans for errors in proper nouns, linking, and punctuation, and provides corrections.
+
+Migrated to use StructuredLLM with Pydantic validation and retry logic.
 """
-import json
 import logging
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from sqlalchemy.orm import Session
-from openai import OpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.models import Episode, TranscriptCue, TranscriptCorrection, AudioSegment
-from app.config import MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL, AI_QUERY_TIMEOUT
+from app.config import (
+    MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL,
+    AI_QUERY_TIMEOUT
+)
+from app.services.ai.structured_llm import StructuredLLM
+from app.services.ai.schemas.proofreading_schema import ProofreadingResponse
+from app.services.ai.validators.proofreading_validator import ProofreadingValidator
 
 logger = logging.getLogger(__name__)
 
 # Default AI provider
 DEFAULT_AI_PROVIDER = "moonshot"
 
-
-@dataclass
-class CorrectionSuggestion:
-    """Individual correction suggestion from LLM."""
-    cue_id: int
-    original_text: str
-    corrected_text: str
-    reason: str  # e.g., "拼写错误", "专有名词", "连读误识别"
-    confidence: float  # 0-1
+# Type alias for backward compatibility
+if TYPE_CHECKING:
+    from app.services.ai.schemas.proofreading_schema import CorrectionSuggestion as CorrectionSuggestionType
+else:
+    CorrectionSuggestionType = dict
 
 
 @dataclass
@@ -40,7 +42,7 @@ class CorrectionResult:
     total_cues: int
     corrected_count: int
     skipped_count: int  # cues that were already marked as corrected
-    corrections: List[CorrectionSuggestion]
+    corrections: List[CorrectionSuggestionType]
     duration_seconds: float
 
 
@@ -56,33 +58,64 @@ class CorrectionSummary:
 
 class SubtitleProofreadingService:
     """
-    Subtitle proofreading service using LLM.
+    Subtitle proofreading service using StructuredLLM.
 
     Scans Whisper transcribed subtitles for errors and provides corrections.
     Supports batch processing, checkpoint recovery, and local replacement.
+
+    Uses StructuredLLM with Pydantic validation for reliable structured output.
     """
 
-    def __init__(self, db: Session, llm_service=None):
+    def __init__(
+        self,
+        db: Session,
+        provider: str = DEFAULT_AI_PROVIDER,
+        api_key: str = None,
+        base_url: str = None,
+        model: str = None
+    ):
         """
         Initialize the proofreading service.
 
         Args:
             db: Database session
-            llm_service: LLM service (optional, defaults to OpenAI client)
+            provider: AI provider name (moonshot, zhipu, gemini)
+            api_key: API key (optional, defaults to config)
+            base_url: Base URL (optional, defaults to config)
+            model: Model name (optional, defaults to config)
         """
         self.db = db
-        self.llm_service = llm_service
+        self.provider = provider
 
-        # Initialize OpenAI client if no service provided
-        if self.llm_service is None and MOONSHOT_API_KEY:
-            try:
-                self.llm_service = OpenAI(
-                    api_key=MOONSHOT_API_KEY,
-                    base_url=MOONSHOT_BASE_URL
-                )
-                logger.info("SubtitleProofreadingService: Initialized OpenAI Client")
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI client: {e}")
+        # Initialize StructuredLLM
+        if api_key is None:
+            if provider == "moonshot":
+                api_key = MOONSHOT_API_KEY
+                base_url = base_url or MOONSHOT_BASE_URL
+                model = model or MOONSHOT_MODEL
+            elif provider == "zhipu":
+                from app.config import ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL
+                api_key = ZHIPU_API_KEY
+                base_url = base_url or ZHIPU_BASE_URL
+                model = model or ZHIPU_MODEL
+            elif provider == "gemini":
+                from app.config import GEMINI_API_KEY, GEMINI_MODEL
+                api_key = GEMINI_API_KEY
+                model = model or GEMINI_MODEL
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+
+        try:
+            self.structured_llm = StructuredLLM(
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url
+            )
+            logger.info(f"SubtitleProofreadingService: Initialized {provider} StructuredLLM")
+        except Exception as e:
+            logger.error(f"Failed to initialize StructuredLLM: {e}")
+            self.structured_llm = None
 
     def scan_and_correct(
         self,
@@ -125,12 +158,10 @@ class SubtitleProofreadingService:
         uncorrected_cues = [c for c in cues if not c.is_corrected]
         skipped_count = len(cues) - len(uncorrected_cues)
 
-        # Process in batches
+        # Process all cues at once (no batching)
         all_corrections = []
-        for i in range(0, len(uncorrected_cues), batch_size):
-            batch = uncorrected_cues[i:i + batch_size]
-            batch_corrections = self._scan_batch(batch)
-            all_corrections.extend(batch_corrections)
+        if uncorrected_cues:
+            all_corrections = self._scan_batch(uncorrected_cues)
 
         # Apply corrections if requested
         if apply and all_corrections:
@@ -155,9 +186,9 @@ class SubtitleProofreadingService:
             duration_seconds=duration
         )
 
-    def _scan_batch(self, cues: List[TranscriptCue]) -> List[CorrectionSuggestion]:
+    def _scan_batch(self, cues: List[TranscriptCue]) -> List[CorrectionSuggestionType]:
         """
-        Scan a batch of cues for corrections using LLM.
+        Scan a batch of cues for corrections using StructuredLLM.
 
         Args:
             cues: List of TranscriptCue objects
@@ -165,8 +196,8 @@ class SubtitleProofreadingService:
         Returns:
             List[CorrectionSuggestion]: Corrections found by LLM
         """
-        if not self.llm_service:
-            logger.warning("No LLM service available, returning empty corrections")
+        if not self.structured_llm:
+            logger.warning("No StructuredLLM available, returning empty corrections")
             return []
 
         # Prepare subtitle list for LLM
@@ -210,69 +241,65 @@ class SubtitleProofreadingService:
 - 只返回确实需要修正的内容"""
 
         user_prompt = f"""**字幕列表**：
-{json.dumps(subtitle_list, ensure_ascii=False)}
+{__import__('json').dumps(subtitle_list, ensure_ascii=False)}
 
 请检查以上字幕，返回需要修正的内容（JSON格式）："""
 
         try:
-            executor = ThreadPoolExecutor(max_workers=1)
+            # Get structured output LLM
+            structured_llm = self.structured_llm.with_structured_output(
+                schema=ProofreadingResponse
+            )
 
-            def call_ai():
-                completion = self.llm_service.chat.completions.create(
-                    model=MOONSHOT_MODEL,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.3,
-                )
-                return completion.choices[0].message.content
+            # Invoke with retry logic
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ]
 
-            future = executor.submit(call_ai)
-            response_text = future.result(timeout=AI_QUERY_TIMEOUT)
-            executor.shutdown(wait=False)
+            from app.services.ai.retry import ai_retry
 
-            # Parse JSON response
-            response_text = response_text.strip()
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.startswith("```"):
-                response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-            response_text = response_text.strip()
+            @ai_retry(max_retries=2, initial_delay=1.0)
+            def call_llm_with_retry():
+                return structured_llm.invoke(messages)
 
-            result = json.loads(response_text)
-            corrections = result.get("corrections", [])
+            result: ProofreadingResponse = call_llm_with_retry()
 
-            # Convert to CorrectionSuggestion objects
+            # Business validation
+            valid_cue_ids = {c.id for c in cues}
+            result = ProofreadingValidator.validate(
+                result,
+                valid_cue_ids=valid_cue_ids,
+                total_cues=len(cues)
+            )
+
+            # Convert to dict format for backward compatibility
             suggestions = []
-            for corr in corrections:
-                suggestions.append(CorrectionSuggestion(
-                    cue_id=corr["cue_id"],
-                    original_text=corr["original_text"],
-                    corrected_text=corr["corrected_text"],
-                    reason=corr.get("reason", ""),
-                    confidence=corr.get("confidence", 0.8)
-                ))
+            for corr in result.corrections:
+                suggestions.append({
+                    "cue_id": corr.cue_id,
+                    "original_text": corr.original_text,
+                    "corrected_text": corr.corrected_text,
+                    "reason": corr.reason,
+                    "confidence": corr.confidence
+                })
 
             logger.info(f"LLM found {len(suggestions)} corrections in batch of {len(cues)} cues")
             return suggestions
 
         except FutureTimeoutError:
             logger.error("AI proofreading timeout, returning empty corrections")
-            executor.shutdown(wait=False)
             return []
         except Exception as e:
             logger.error(f"AI proofreading failed: {e}, returning empty corrections")
             return []
 
-    def apply_corrections(self, corrections: List[CorrectionSuggestion]) -> int:
+    def apply_corrections(self, corrections: List[CorrectionSuggestionType]) -> int:
         """
         Apply corrections to the database.
 
         Args:
-            corrections: List of correction suggestions
+            corrections: List of correction suggestions (dict format from Pydantic model)
 
         Returns:
             int: Number of corrections applied
@@ -280,23 +307,29 @@ class SubtitleProofreadingService:
         applied_count = 0
 
         for correction in corrections:
-            cue = self.db.get(TranscriptCue, correction.cue_id)
+            cue_id = correction["cue_id"] if isinstance(correction, dict) else correction.cue_id
+            original_text = correction["original_text"] if isinstance(correction, dict) else correction.original_text
+            corrected_text = correction["corrected_text"] if isinstance(correction, dict) else correction.corrected_text
+            reason = correction["reason"] if isinstance(correction, dict) else correction.reason
+            confidence = correction["confidence"] if isinstance(correction, dict) else correction.confidence
+
+            cue = self.db.get(TranscriptCue, cue_id)
             if not cue:
-                logger.warning(f"Cue {correction.cue_id} not found, skipping")
+                logger.warning(f"Cue {cue_id} not found, skipping")
                 continue
 
             # Update cue
-            cue.corrected_text = correction.corrected_text
+            cue.corrected_text = corrected_text
             cue.is_corrected = True
 
             # Create correction record
             correction_record = TranscriptCorrection(
                 cue_id=cue.id,
-                original_text=correction.original_text,
-                corrected_text=correction.corrected_text,
-                reason=correction.reason,
-                confidence=correction.confidence,
-                ai_model=MOONSHOT_MODEL,
+                original_text=original_text,
+                corrected_text=corrected_text,
+                reason=reason,
+                confidence=confidence,
+                ai_model=f"{self.provider}:{self.structured_llm.model if self.structured_llm else 'unknown'}",
                 applied=True
             )
             self.db.add(correction_record)

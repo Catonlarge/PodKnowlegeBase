@@ -2,16 +2,25 @@
 Segmentation Service - 语义章节切分服务
 
 使用 AI 分析 Transcript 进行语义章节切分，生成中文标题和摘要。
+
+Migrated to use StructuredLLM with Pydantic validation and retry logic.
 """
-import json
 import logging
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from sqlalchemy.orm import Session
+from langchain_core.messages import SystemMessage, HumanMessage
 
-from app.models import Episode, Chapter, TranscriptCue
+from app.models import Episode, Chapter, TranscriptCue, AudioSegment
 from app.enums.workflow_status import WorkflowStatus
+from app.config import (
+    MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL,
+    ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL
+)
+from app.services.ai.structured_llm import StructuredLLM
+from app.services.ai.schemas.segmentation_schema import SegmentationResponse
+from app.services.ai.validators.segmentation_validator import SegmentationValidator
 
 logger = logging.getLogger(__name__)
 
@@ -80,18 +89,59 @@ class SegmentationService:
     2. 生成 Chapter 记录（中文标题和摘要）
     3. 关联 TranscriptCue 到 Chapter
     4. 更新 Episode.workflow_status
+
+    Uses StructuredLLM with Pydantic validation for reliable structured output.
     """
 
-    def __init__(self, db: Session, ai_service):
+    def __init__(
+        self,
+        db: Session,
+        provider: str = "moonshot",
+        api_key: str = None,
+        base_url: str = None,
+        model: str = None
+    ):
         """
         初始化章节切分服务
 
         Args:
             db: 数据库会话
-            ai_service: AI 服务实例
+            provider: AI provider name (moonshot, zhipu, gemini)
+            api_key: API key (optional, defaults to config)
+            base_url: Base URL (optional, defaults to config)
+            model: Model name (optional, defaults to config)
         """
         self.db = db
-        self.ai_service = ai_service
+        self.provider = provider
+
+        # Initialize StructuredLLM
+        if api_key is None:
+            if provider == "moonshot":
+                api_key = MOONSHOT_API_KEY
+                base_url = base_url or MOONSHOT_BASE_URL
+                model = model or MOONSHOT_MODEL
+            elif provider == "zhipu":
+                api_key = ZHIPU_API_KEY
+                base_url = base_url or ZHIPU_BASE_URL
+                model = model or ZHIPU_MODEL
+            elif provider == "gemini":
+                from app.config import GEMINI_API_KEY, GEMINI_MODEL
+                api_key = GEMINI_API_KEY
+                model = model or GEMINI_MODEL
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+
+        try:
+            self.structured_llm = StructuredLLM(
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url
+            )
+            logger.info(f"SegmentationService: Initialized {provider} StructuredLLM")
+        except Exception as e:
+            logger.error(f"Failed to initialize StructuredLLM: {e}")
+            self.structured_llm = None
 
     def analyze_and_segment(
         self,
@@ -163,11 +213,14 @@ class SegmentationService:
 
         logger.info(f"开始章节切分: episode_id={episode_id}, cues数量={len(cues)}")
 
-        # 直接调用 OpenAI 兼容 API（绕过 AIService 的 word/phrase/sentence 解析）
-        response_text = self._call_ai_for_segmentation(prompt)
+        # 调用 StructuredLLM 进行章节切分
+        response: SegmentationResponse = self._call_ai_for_segmentation(prompt, total_duration=episode.duration)
 
-        # 解析 AI 响应
-        chapters_data = self._parse_ai_response(response_text)
+        # 业务验证
+        response = SegmentationValidator.validate(response, total_duration=episode.duration)
+
+        # 创建 Chapter 记录
+        chapters = self._create_chapters(episode_id, response)
 
         # 创建 Chapter 记录
         chapters = self._create_chapters(episode_id, chapters_data)
@@ -282,29 +335,29 @@ class SegmentationService:
     def _create_chapters(
         self,
         episode_id: int,
-        chapters_data: List[Dict]
+        response: SegmentationResponse
     ) -> List[Chapter]:
         """
         创建 Chapter 记录
 
         Args:
             episode_id: Episode ID
-            chapters_data: 章节数据列表
+            response: SegmentationResponse (Pydantic model)
 
         Returns:
             List[Chapter]: 创建的 Chapter 列表
         """
         chapters = []
-        for index, chapter_data in enumerate(chapters_data):
+        for index, chapter_data in enumerate(response.chapters):
             chapter = Chapter(
                 episode_id=episode_id,
                 chapter_index=index,
-                title=chapter_data.get("title", f"章节{index + 1}"),
-                summary=chapter_data.get("summary"),
-                start_time=float(chapter_data.get("start_time", 0)),
-                end_time=float(chapter_data.get("end_time", 0)),
+                title=chapter_data.title,
+                summary=chapter_data.summary,
+                start_time=chapter_data.start_time,
+                end_time=chapter_data.end_time,
                 status="completed",
-                ai_model_used=str(getattr(self.ai_service, "provider", "unknown")),
+                ai_model_used=f"{self.provider}:{self.structured_llm.model if self.structured_llm else 'unknown'}",
                 processed_at=datetime.now()
             )
             self.db.add(chapter)
@@ -348,51 +401,45 @@ class SegmentationService:
 
         self.db.flush()
 
-    def _call_ai_for_segmentation(self, prompt: str) -> str:
+    def _call_ai_for_segmentation(self, prompt: str, total_duration: float) -> SegmentationResponse:
         """
-        直接调用 AI API 进行章节切分（返回原始文本）
+        调用 StructuredLLM 进行章节切分
 
         Args:
             prompt: 提示词
+            total_duration: 总时长（秒）
 
         Returns:
-            str: AI 返回的原始文本
+            SegmentationResponse: AI 返回的章节数据
 
         Raises:
             RuntimeError: AI 调用失败
         """
-        from openai import OpenAI
-        from app.config import MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL, AI_QUERY_TIMEOUT
-
-        if not MOONSHOT_API_KEY:
-            raise ValueError("MOONSHOT_API_KEY 未设置")
+        if not self.structured_llm:
+            raise ValueError("StructuredLLM 未初始化")
 
         try:
-            client = OpenAI(
-                api_key=MOONSHOT_API_KEY,
-                base_url=MOONSHOT_BASE_URL
+            # Get structured output LLM
+            structured_llm = self.structured_llm.with_structured_output(
+                schema=SegmentationResponse
             )
 
-            logger.info(f"调用 Moonshot API 进行章节切分 (model={MOONSHOT_MODEL})")
+            # Invoke with retry logic
+            messages = [
+                SystemMessage(content="你是一个专业的音频内容分析师。你擅长识别内容的语义结构，拒绝机械式时间切分，始终保持章节的语义完整性。对于短内容，你会减少切分；对于长内容，你会适当增加切分点，但绝不碎片化。"),
+                HumanMessage(content=prompt)
+            ]
 
-            completion = client.chat.completions.create(
-                model=MOONSHOT_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是一个专业的音频内容分析师。你擅长识别内容的语义结构，拒绝机械式时间切分，始终保持章节的语义完整性。对于短内容，你会减少切分；对于长内容，你会适当增加切分点，但绝不碎片化。"
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.6,  # kimi-k2-turbo-preview supports 0-1 (default 0.6)
-            )
+            from app.services.ai.retry import ai_retry
 
-            response_text = completion.choices[0].message.content
-            logger.info(f"AI 响应长度: {len(response_text)} 字符")
-            return response_text
+            @ai_retry(max_retries=2, initial_delay=1.0)
+            def call_llm_with_retry():
+                return structured_llm.invoke(messages)
+
+            result: SegmentationResponse = call_llm_with_retry()
+
+            logger.info(f"AI 返回 {len(result.chapters)} 个章节")
+            return result
 
         except Exception as e:
             logger.error(f"AI 调用失败: {e}")
