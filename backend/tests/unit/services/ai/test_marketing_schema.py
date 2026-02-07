@@ -178,6 +178,37 @@ class TestMarketingAngle:
                 hashtags=["#标签1", "#标签2", "#" + "a" * 20]
             )
 
+    def test_marketing_angle_with_oversized_title_raises_validation_error(self):
+        """
+        Given: title 长度大于 30
+        When: 创建模型实例
+        Then: 抛出 ValidationError (不应被截断)
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            MarketingAngle(
+                angle_name="角度",
+                title="This is a very long title that exceeds thirty characters",
+                content="a" * 200,
+                hashtags=["#标签1", "#标签2", "#标签3"]
+            )
+        # 确保错误是因为长度限制
+        assert "at most 30" in str(exc_info.value) or "ensure this value has at most 30 characters" in str(exc_info.value)
+
+    def test_marketing_angle_with_title_exactly_30_chars_passes(self):
+        """
+        Given: title 长度恰好为 30 字符
+        When: 创建模型实例
+        Then: 验证通过
+        """
+        title_30 = "A" * 30
+        angle = MarketingAngle(
+            angle_name="角度",
+            title=title_30,
+            content="a" * 200,
+            hashtags=["#标签1", "#标签2", "#标签3"]
+        )
+        assert len(angle.title) == 30
+
 
 class TestMultiAngleMarketingResponse:
     """测试 MultiAngleMarketingResponse 模型"""

@@ -28,10 +28,10 @@ class TranslationResponse(BaseModel):
     Root response model for translation service.
 
     Contains a list of translation items with validation
-    to ensure no duplicate cue_ids.
+    to ensure no duplicate cue_ids and at least one translation.
     """
 
-    translations: List[TranslationItem] = Field(default_factory=list)
+    translations: List[TranslationItem] = Field(..., min_length=1)
 
     @field_validator('translations')
     @classmethod

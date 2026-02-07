@@ -235,15 +235,15 @@ class TestCorrectionSuggestion:
 class TestProofreadingResponse:
     """测试 ProofreadingResponse 模型"""
 
-    def test_valid_response_with_empty_corrections_list_passes_validation(self):
+    def test_response_with_empty_corrections_list_raises_validation_error(self):
         """
-        Given: 包含空 corrections 列表的有效响应
+        Given: 包含空 corrections 列表的响应
         When: 创建模型实例
-        Then: 验证通过
+        Then: 抛出 ValidationError (至少需要1个修正建议)
         """
-        response = ProofreadingResponse(corrections=[])
-
-        assert len(response.corrections) == 0
+        with pytest.raises(ValidationError) as exc_info:
+            ProofreadingResponse(corrections=[])
+        assert "at least 1" in str(exc_info.value).lower() or "至少" in str(exc_info.value)
 
     def test_valid_response_with_single_correction_passes_validation(self):
         """
@@ -366,16 +366,15 @@ class TestProofreadingResponse:
                 ]
             )
 
-    def test_response_default_factory_creates_empty_list(self):
+    def test_response_without_corrections_parameter_raises_validation_error(self):
         """
         Given: 不提供 corrections 参数
         When: 创建模型实例
-        Then: corrections 默认为空列表
+        Then: 抛出 ValidationError (corrections 是必需参数)
         """
-        response = ProofreadingResponse()
-
-        assert response.corrections == []
-        assert isinstance(response.corrections, list)
+        with pytest.raises(ValidationError) as exc_info:
+            ProofreadingResponse()
+        assert "field required" in str(exc_info.value).lower() or "required" in str(exc_info.value).lower()
 
     def test_response_json_serialization_deserialization(self):
         """

@@ -50,16 +50,26 @@ class SegmentationResponse(BaseModel):
 
     @field_validator('chapters')
     @classmethod
-    def validate_no_overlap(cls, v):
+    def validate_sorted_and_no_overlap(cls, v):
         """
-        Validate that chapters don't overlap in time.
+        Validate that chapters are sorted by start_time and don't overlap.
 
         Args:
             v: List of Chapter
 
         Raises:
-            ValueError: If chapters overlap
+            ValueError: If chapters are not sorted or overlap
         """
+        # Validate sorting first
+        for i in range(len(v) - 1):
+            if v[i].start_time > v[i + 1].start_time:
+                raise ValueError(
+                    f'chapters 必须按 start_time 排序: '
+                    f'章节 {i+1} 开始于 {v[i].start_time}秒, '
+                    f'章节 {i+2} 开始于 {v[i+1].start_time}秒'
+                )
+
+        # Then validate no overlap
         for i in range(len(v) - 1):
             if v[i].end_time > v[i + 1].start_time:
                 raise ValueError(

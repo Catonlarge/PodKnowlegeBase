@@ -32,10 +32,10 @@ class ProofreadingResponse(BaseModel):
     Root response model for proofreading service.
 
     Contains a list of correction suggestions with validation
-    to ensure no duplicate cue_ids.
+    to ensure no duplicate cue_ids and at least one correction.
     """
 
-    corrections: List[CorrectionSuggestion] = Field(default_factory=list)
+    corrections: List[CorrectionSuggestion] = Field(..., min_length=1)
 
     @field_validator('corrections')
     @classmethod

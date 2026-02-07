@@ -277,6 +277,30 @@ class TestSegmentationResponse:
         with pytest.raises(ValidationError):
             SegmentationResponse(chapters=chapters)
 
+    def test_response_with_unsorted_chapters_raises_validation_error(self):
+        """
+        Given: 章节未按 start_time 排序
+        When: 创建模型实例
+        Then: 抛出 ValidationError
+        """
+        with pytest.raises(ValueError, match="必须按 start_time 排序"):
+            SegmentationResponse(
+                chapters=[
+                    Chapter(
+                        title="第二章",
+                        summary="摘要2",
+                        start_time=60.0,
+                        end_time=120.0
+                    ),
+                    Chapter(
+                        title="第一章",
+                        summary="摘要1",
+                        start_time=0.0,
+                        end_time=60.0
+                    ),
+                ]
+            )
+
     def test_response_with_adjacent_chapters_passes_validation(self):
         """
         Given: 相邻章节（end_time == next start_time）

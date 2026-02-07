@@ -165,8 +165,7 @@ class SubtitleProofreadingService:
 
         # Apply corrections if requested
         if apply and all_corrections:
-            self.apply_corrections(all_corrections)
-            corrected_count = len(all_corrections)
+            corrected_count = self.apply_corrections(all_corrections, cues=uncorrected_cues)
         else:
             corrected_count = 0
 
@@ -294,16 +293,23 @@ class SubtitleProofreadingService:
             logger.error(f"AI proofreading failed: {e}, returning empty corrections")
             return []
 
-    def apply_corrections(self, corrections: List[CorrectionSuggestionType]) -> int:
+    def apply_corrections(
+        self,
+        corrections: List[CorrectionSuggestionType],
+        cues: List[TranscriptCue] = None
+    ) -> int:
         """
         Apply corrections to the database.
 
         Args:
             corrections: List of correction suggestions (dict format from Pydantic model)
+            cues: Original cues list for validation (optional, recommended)
 
         Returns:
             int: Number of corrections applied
         """
+        # Build cue text mapping for validation
+        cue_text_map = {cue.id: cue.text for cue in (cues or [])}
         applied_count = 0
 
         for correction in corrections:
@@ -318,14 +324,24 @@ class SubtitleProofreadingService:
                 logger.warning(f"Cue {cue_id} not found, skipping")
                 continue
 
+            # Validate original_text matches database if cues provided
+            if cue_text_map and original_text != cue.text:
+                logger.error(
+                    f"cue_id {cue_id} original_text mismatch!\n"
+                    f"  DB: '{cue.text[:50]}...'\n"
+                    f"  AI: '{original_text[:50]}...'\n"
+                    f"  Skipping correction"
+                )
+                continue
+
             # Update cue
             cue.corrected_text = corrected_text
             cue.is_corrected = True
 
-            # Create correction record
+            # Create correction record using database original_text
             correction_record = TranscriptCorrection(
                 cue_id=cue.id,
-                original_text=original_text,
+                original_text=cue.text,  # Use database value
                 corrected_text=corrected_text,
                 reason=reason,
                 confidence=confidence,

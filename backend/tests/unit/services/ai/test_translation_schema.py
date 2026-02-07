@@ -34,19 +34,19 @@ class TestTranslationItem:
 
     def test_valid_translation_item_with_maximal_data_passes_validation(self):
         """
-        Given: 包含最大有效数据的 TranslationItem
+        Given: 包含大文本数据的 TranslationItem
         When: 创建模型实例
-        Then: 验证通过
+        Then: 验证通过（字幕长度不固定，无上限）
         """
         item = TranslationItem(
             cue_id=99999,
-            original_text="a" * 500,
-            translated_text="b" * 500
+            original_text="a" * 1000,
+            translated_text="b" * 1000
         )
 
         assert item.cue_id == 99999
-        assert len(item.original_text) == 500
-        assert len(item.translated_text) == 500
+        assert len(item.original_text) == 1000
+        assert len(item.translated_text) == 1000
 
     def test_valid_translation_item_with_chinese_text_passes_validation(self):
         """
@@ -101,18 +101,18 @@ class TestTranslationItem:
                 translated_text="你好"
             )
 
-    def test_translation_item_with_too_long_original_text_raises_validation_error(self):
+    def test_translation_item_with_long_original_text_passes_validation(self):
         """
-        Given: original_text 长度大于 500
+        Given: original_text 长度很长（超过500字符）
         When: 创建模型实例
-        Then: 抛出 ValidationError
+        Then: 验证通过（字幕长度不固定，无上限）
         """
-        with pytest.raises(ValidationError):
-            TranslationItem(
-                cue_id=1,
-                original_text="a" * 501,
-                translated_text="你好"
-            )
+        item = TranslationItem(
+            cue_id=1,
+            original_text="a" * 1000,
+            translated_text="你好"
+        )
+        assert len(item.original_text) == 1000
 
     def test_translation_item_with_empty_translated_text_raises_validation_error(self):
         """
@@ -127,18 +127,18 @@ class TestTranslationItem:
                 translated_text=""
             )
 
-    def test_translation_item_with_too_long_translated_text_raises_validation_error(self):
+    def test_translation_item_with_long_translated_text_passes_validation(self):
         """
-        Given: translated_text 长度大于 500
+        Given: translated_text 长度很长（超过500字符）
         When: 创建模型实例
-        Then: 抛出 ValidationError
+        Then: 验证通过（字幕长度不固定，无上限）
         """
-        with pytest.raises(ValidationError):
-            TranslationItem(
-                cue_id=1,
-                original_text="Hello",
-                translated_text="a" * 501
-            )
+        item = TranslationItem(
+            cue_id=1,
+            original_text="Hello",
+            translated_text="a" * 1000
+        )
+        assert len(item.translated_text) == 1000
 
     def test_translation_item_with_special_characters_passes_validation(self):
         """
@@ -159,15 +159,15 @@ class TestTranslationItem:
 class TestTranslationResponse:
     """测试 TranslationResponse 模型"""
 
-    def test_valid_response_with_empty_translations_list_passes_validation(self):
+    def test_response_with_empty_translations_list_raises_validation_error(self):
         """
-        Given: 包含空 translations 列表的有效响应
+        Given: 包含空 translations 列表的响应
         When: 创建模型实例
-        Then: 验证通过
+        Then: 抛出 ValidationError (至少需要1个翻译项)
         """
-        response = TranslationResponse(translations=[])
-
-        assert len(response.translations) == 0
+        with pytest.raises(ValidationError) as exc_info:
+            TranslationResponse(translations=[])
+        assert "at least 1" in str(exc_info.value).lower() or "至少" in str(exc_info.value)
 
     def test_valid_response_with_single_translation_passes_validation(self):
         """
@@ -270,16 +270,15 @@ class TestTranslationResponse:
                 ]
             )
 
-    def test_response_default_factory_creates_empty_list(self):
+    def test_response_without_translations_parameter_raises_validation_error(self):
         """
         Given: 不提供 translations 参数
         When: 创建模型实例
-        Then: translations 默认为空列表
+        Then: 抛出 ValidationError (translations 是必需参数)
         """
-        response = TranslationResponse()
-
-        assert response.translations == []
-        assert isinstance(response.translations, list)
+        with pytest.raises(ValidationError) as exc_info:
+            TranslationResponse()
+        assert "field required" in str(exc_info.value).lower() or "required" in str(exc_info.value).lower()
 
     def test_response_json_serialization_deserialization(self):
         """

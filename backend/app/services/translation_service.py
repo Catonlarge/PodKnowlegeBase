@@ -860,7 +860,20 @@ class TranslationService:
 {__import__('json').dumps(subtitles_data, ensure_ascii=False, indent=2)}
 ```
 
-请返回符合以下 JSON Schema 的翻译结果："""
+请返回符合以下 JSON 格式的翻译结果：
+```json
+{{
+  "translations": [
+    {{
+      "cue_id": 7021,
+      "original_text": "Hello, how are you?",
+      "translated_text": "你好，你好吗？"
+    }}
+  ]
+}}
+```
+
+注意：必须返回完整的 JSON 对象，包含所有 {len(cues)} 条字幕的翻译。"""
 
         logger.info(f"调用 AI 批量翻译 {len(cues)} 条字幕...")
 
