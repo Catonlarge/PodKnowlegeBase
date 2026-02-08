@@ -129,7 +129,7 @@ class WorkflowPublisher:
         self._display_publication_summary(records)
 
         # Update episode status
-        episode.workflow_status = WorkflowStatus.PUBLISHED
+        episode.workflow_status = WorkflowStatus.PUBLISHED.value
         self.db.commit()
 
         return episode
