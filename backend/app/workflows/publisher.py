@@ -77,12 +77,13 @@ class WorkflowPublisher:
         self.publishers["ima"] = ImaPublisher()
         self.publishers["marketing"] = MarketingPublisher()
 
-    def publish_workflow(self, episode_id: int) -> Episode:
+    def publish_workflow(self, episode_id: int, language_code: str = "zh") -> Episode:
         """
         Execute the complete publish workflow.
 
         Args:
             episode_id: Episode ID
+            language_code: 翻译语言代码，默认 "zh"
 
         Returns:
             Updated Episode with PUBLISHED status
@@ -105,7 +106,7 @@ class WorkflowPublisher:
 
         # Step 1: Parse Obsidian document for edits
         self.console.print("[cyan]步骤 1/3: 解析 Obsidian 文档...[/cyan]")
-        diffs = self.parse_and_backfill(episode)
+        diffs = self.parse_and_backfill(episode, language_code=language_code)
 
         if diffs:
             self.console.print(f"  检测到 {len(diffs)} 处修改")
@@ -134,12 +135,13 @@ class WorkflowPublisher:
 
         return episode
 
-    def parse_and_backfill(self, episode: Episode) -> List[Diff]:
+    def parse_and_backfill(self, episode: Episode, language_code: str = "zh") -> List[Diff]:
         """
         Parse Obsidian document and backfill edits to database.
 
         Args:
             episode: Episode to process
+            language_code: 翻译语言代码，默认 "zh"
 
         Returns:
             List of Diff objects representing changes
@@ -158,14 +160,15 @@ class WorkflowPublisher:
 
         # Parse the document for changes
         diff_results = self.obsidian_service.parse_episode_from_markdown(
-            episode.id, markdown, language_code="zh"
+            episode.id, markdown, language_code=language_code
         )
 
         # Backfill translation changes
         for diff_result in diff_results:
             if diff_result.is_edited:
                 translation = self.db.query(Translation).filter(
-                    Translation.cue_id == diff_result.cue_id
+                    Translation.cue_id == diff_result.cue_id,
+                    Translation.language_code == language_code
                 ).first()
 
                 if translation:
@@ -175,6 +178,10 @@ class WorkflowPublisher:
                         original_value=diff_result.original,
                         new_value=diff_result.edited
                     ))
+
+                    # 保存原始翻译（如果还没有保存）
+                    if translation.original_translation is None:
+                        translation.original_translation = translation.translation
 
                     # Update translation
                     translation.translation = diff_result.edited
