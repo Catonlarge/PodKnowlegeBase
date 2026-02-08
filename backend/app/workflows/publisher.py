@@ -104,17 +104,8 @@ class WorkflowPublisher:
                 f"请先在 Obsidian 中审核并运行 sync_review_status.py"
             )
 
-        # Step 1: Parse Obsidian document for edits
-        self.console.print("[cyan]步骤 1/3: 解析 Obsidian 文档...[/cyan]")
-        diffs = self.parse_and_backfill(episode, language_code=language_code)
-
-        if diffs:
-            self.console.print(f"  检测到 {len(diffs)} 处修改")
-        else:
-            self.console.print("  无修改")
-
-        # Step 2: Generate marketing content
-        self.console.print("[cyan]步骤 2/3: 生成营销文案...[/cyan]")
+        # Step 1: Generate marketing content
+        self.console.print("[cyan]步骤 1/2: 生成营销文案...[/cyan]")
         posts = self.generate_marketing(episode)
 
         if posts:
@@ -123,8 +114,8 @@ class WorkflowPublisher:
         else:
             self.console.print("  未生成营销文案")
 
-        # Step 3: Distribute to platforms
-        self.console.print("[cyan]步骤 3/3: 分发到各平台...[/cyan]")
+        # Step 2: Distribute to platforms
+        self.console.print("[cyan]步骤 2/2: 分发到各平台...[/cyan]")
         records = self.distribute_to_platforms(episode, posts)
 
         self._display_publication_summary(records)
@@ -137,7 +128,14 @@ class WorkflowPublisher:
 
     def parse_and_backfill(self, episode: Episode, language_code: str = "zh") -> List[Diff]:
         """
-        Parse Obsidian document and backfill edits to database.
+        解析 Obsidian 文档并回填编辑到数据库（独立工具方法）
+
+        注意：此方法不应在 publish_workflow() 中调用。
+        sync_approved_episodes() 已经处理了文档解析和翻译更新。
+        保留此方法用于：
+        - 独立测试和调试
+        - 直接测试 Obsidian 文档解析功能
+        - 其他需要单独回填的场景
 
         Args:
             episode: Episode to process
