@@ -112,31 +112,90 @@ class ReviewService:
         """
         同步已审核通过的 Episode 到数据库
 
-        将 status=approved 的 Episode 更新为 PUBLISHED 状态
+        执行步骤：
+        1. 检测 Obsidian 中 status: approved 的文档
+        2. 解析文档，比对用户修改
+        3. 只更新用户修改过的翻译（设置 is_edited = TRUE）
+        4. 更新 Episode.workflow_status = APPROVED (7)
 
         Returns:
-            int: 更新的数量
+            int: 同步的 Episode 数量
         """
-        statuses = self.scan_review_status()
+        from app.services.obsidian_service import ObsidianService
+        from app.models import Translation
 
+        statuses = self.scan_review_status()
         approved_episodes = [s for s in statuses if s.status == "approved"]
 
         if not approved_episodes:
             logger.info("没有已审核通过的 Episode")
             return 0
 
+        obsidian_service = ObsidianService(self.db, vault_path=None)
         count = 0
-        for review_status in approved_episodes:
-            episode = self.db.query(Episode).filter(
-                Episode.id == review_status.episode_id
-            ).first()
+        total_edited = 0
 
-            if episode:
-                episode.workflow_status = WorkflowStatus.PUBLISHED.value
-                count += 1
-                logger.info(f"Episode {episode.id} 标记为已发布")
+        for review_status in approved_episodes:
+            episode_id = review_status.episode_id
+            episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
+
+            if not episode:
+                logger.warning(f"Episode {episode_id} 不存在于数据库")
+                continue
+
+            # 只允许从 READY_FOR_REVIEW 状态同步
+            if episode.workflow_status != WorkflowStatus.READY_FOR_REVIEW.value:
+                logger.warning(
+                    f"Episode {episode_id} 状态为 {episode.workflow_status}，"
+                    f"预期状态为 {WorkflowStatus.READY_FOR_REVIEW.value}，跳过"
+                )
+                continue
+
+            # 读取 Obsidian 文档
+            obsidian_path = review_status.file_path
+            try:
+                with open(obsidian_path, 'r', encoding='utf-8') as f:
+                    markdown = f.read()
+            except Exception as e:
+                logger.error(f"读取文件失败 {obsidian_path}: {e}")
+                continue
+
+            # 解析用户修改
+            diff_results = obsidian_service.parse_episode_from_markdown(
+                episode_id, markdown, language_code="zh"
+            )
+
+            # 只更新用户修改过的翻译
+            edited_count = 0
+            for diff in diff_results:
+                if diff.is_edited:
+                    translation = self.db.query(Translation).filter(
+                        Translation.cue_id == diff.cue_id,
+                        Translation.language_code == "zh"
+                    ).first()
+
+                    if translation and translation.translation != diff.edited:
+                        # 保存原始翻译（如果还没有保存）
+                        if translation.original_translation is None:
+                            translation.original_translation = translation.translation
+
+                        # 更新为用户修改版本
+                        translation.translation = diff.edited
+                        translation.is_edited = True
+                        edited_count += 1
+
+            # 更新状态为 APPROVED
+            episode.workflow_status = WorkflowStatus.APPROVED.value
+            count += 1
+            total_edited += edited_count
+
+            logger.info(
+                f"Episode {episode_id} 同步完成: "
+                f"状态 → APPROVED, 编辑条目数: {edited_count}"
+            )
 
         self.db.commit()
+        logger.info(f"同步完成: {count} 个 Episode, 总编辑条目数: {total_edited}")
         return count
 
     def check_episode_approved(self, episode_id: int) -> bool:

@@ -55,15 +55,11 @@ class WorkflowPublisher:
         self.console = console or Console()
         self.obsidian_service = ObsidianService(db)
 
-        # Initialize LLM client for marketing generation
-        if MOONSHOT_API_KEY:
-            self.llm_client = OpenAI(
-                api_key=MOONSHOT_API_KEY,
-                base_url=MOONSHOT_BASE_URL
-            )
-            self.marketing_service = MarketingService(db, llm_service=self.llm_client)
-        else:
-            self.llm_client = None
+        # Initialize marketing service (it manages its own LLM client)
+        try:
+            self.marketing_service = MarketingService(db)
+        except Exception as e:
+            self.console.print(f"  [yellow]警告: MarketingService 初始化失败: {e}[/yellow]")
             self.marketing_service = None
 
         # Initialize platform publishers
@@ -98,10 +94,13 @@ class WorkflowPublisher:
         if not episode:
             raise ValueError(f"Episode not found: id={episode_id}")
 
-        if episode.workflow_status != WorkflowStatus.READY_FOR_REVIEW:
-            self.console.print(
-                f"[yellow]警告: Episode 状态为 {episode.workflow_status.label}，"
-                f"预期状态为 {WorkflowStatus.READY_FOR_REVIEW.label}[/yellow]"
+        # 只允许从 APPROVED 状态发布
+        if episode.workflow_status != WorkflowStatus.APPROVED.value:
+            current_status = WorkflowStatus(episode.workflow_status)
+            raise ValueError(
+                f"Episode 状态为 {current_status.label}，"
+                f"预期状态为 {WorkflowStatus.APPROVED.label}。"
+                f"请先在 Obsidian 中审核并运行 sync_review_status.py"
             )
 
         # Step 1: Parse Obsidian document for edits
@@ -153,27 +152,34 @@ class WorkflowPublisher:
             self.console.print(f"  [yellow]警告: Obsidian 文档不存在: {obsidian_path}[/yellow]")
             return diffs
 
-        # Parse the document
-        parsed_data = self.obsidian_service.parse_episode(episode.id)
+        # Read the markdown file
+        with open(obsidian_path, 'r', encoding='utf-8') as f:
+            markdown = f.read()
+
+        # Parse the document for changes
+        diff_results = self.obsidian_service.parse_episode_from_markdown(
+            episode.id, markdown, language_code="zh"
+        )
 
         # Backfill translation changes
-        for cue_id, new_translation in parsed_data.get("translations", {}).items():
-            translation = self.db.query(Translation).filter(
-                Translation.cue_id == cue_id
-            ).first()
+        for diff_result in diff_results:
+            if diff_result.is_edited:
+                translation = self.db.query(Translation).filter(
+                    Translation.cue_id == diff_result.cue_id
+                ).first()
 
-            if translation and translation.translation != new_translation:
-                diffs.append(Diff(
-                    cue_id=cue_id,
-                    field="translation",
-                    original_value=translation.translation,
-                    new_value=new_translation
-                ))
+                if translation:
+                    diffs.append(Diff(
+                        cue_id=diff_result.cue_id,
+                        field="translation",
+                        original_value=diff_result.original,
+                        new_value=diff_result.edited
+                    ))
 
-                # Update translation
-                translation.translation = new_translation
-                translation.is_edited = True
-                self.db.add(translation)
+                    # Update translation
+                    translation.translation = diff_result.edited
+                    translation.is_edited = True
+                    self.db.add(translation)
 
         self.db.commit()
         return diffs
@@ -192,8 +198,18 @@ class WorkflowPublisher:
             self.console.print("  [yellow]警告: 未配置 LLM，跳过营销文案生成[/yellow]")
             return []
 
-        # Generate posts at episode level
-        posts = self.marketing_service.generate_posts(episode.id)
+        # Generate multi-angle marketing copies
+        copies = self.marketing_service.generate_xiaohongshu_copy_multi_angle(episode.id)
+
+        # Save each copy as a MarketingPost
+        posts = []
+        for i, copy in enumerate(copies):
+            angle_tag = copy.metadata.get("angle_name", f"angle_{i+1}")
+            post = self.marketing_service.save_marketing_copy(
+                episode.id, copy, platform="xhs", angle_tag=angle_tag
+            )
+            posts.append(post)
+
         return posts
 
     def distribute_to_platforms(

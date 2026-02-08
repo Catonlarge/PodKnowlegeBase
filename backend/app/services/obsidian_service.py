@@ -151,6 +151,25 @@ class ObsidianService:
         logger.info(f"Obsidian 文档已保存: {file_path}")
         return file_path
 
+    def _get_episode_path(self, episode_id: int) -> Path:
+        """
+        获取 Episode 的 Obsidian 文档路径
+
+        Args:
+            episode_id: Episode ID
+
+        Returns:
+            Path: Obsidian 文档路径
+        """
+        episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
+        if not episode:
+            raise ValueError(f"Episode not found: id={episode_id}")
+
+        safe_title = self._sanitize_filename(episode.display_title)
+        filename = f"{episode.id}-{safe_title}.md"
+        notes_dir = Path(self.vault_path) / OBSIDIAN_NOTES_SUBDIR
+        return notes_dir / filename
+
     def render_marketing_posts(self, episode_id: int) -> str:
         """
         渲染营销文案为 Obsidian Markdown
@@ -280,14 +299,22 @@ class ObsidianService:
                     continue
 
                 # 查找中文翻译行（接下来的几行）
+                # 格式: [时间](cue://ID) English text 后面跟空行，然后是中文翻译
                 translation_text = None
                 j = i + 1
                 while j < len(lines) and j < i + 5:  # 最多往后看 5 行
-                    if "**中文**:" in lines[j]:
-                        # 提取翻译文本
-                        translation_text = lines[j].split("**中文**:", 1)[1].strip()
+                    current_line = lines[j].strip()
+                    # 跳过空行
+                    if not current_line:
+                        j += 1
+                        continue
+                    # 如果下一行是 cue:// 开头或 **SPEAKER** 开头，说明没有翻译
+                    if "cue://" in current_line or current_line.startswith("**"):
                         break
-                    j += 1
+                    # 否则当前行就是中文翻译
+                    translation_text = current_line
+                    break
+                j += 1
 
                 if translation_text is not None:
                     # 获取数据库中的原始翻译并比较

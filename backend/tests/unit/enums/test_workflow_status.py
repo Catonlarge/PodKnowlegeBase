@@ -19,12 +19,20 @@ class TestWorkflowStatus:
         """
         assert WorkflowStatus.INIT.value == 0
 
-    def test_workflow_status_published_value_is_six(self):
+    def test_workflow_status_published_value_is_eight(self):
         """Given: WorkflowStatus enum
         When: Accessing PUBLISHED
-        Then: Value equals 6
+        Then: Value equals 8
         """
-        assert WorkflowStatus.PUBLISHED.value == 6
+        assert WorkflowStatus.PUBLISHED.value == 8
+
+    def test_workflow_status_approved_value_is_seven(self):
+        """Given: WorkflowStatus enum
+        When: Accessing APPROVED
+        Then: Value equals 7
+        """
+        assert WorkflowStatus.APPROVED.value == 7
+        assert WorkflowStatus.APPROVED.label == "已审核"
 
     def test_workflow_status_get_next_status_from_init(self):
         """Given: INIT status
@@ -44,6 +52,24 @@ class TestWorkflowStatus:
         assert result == WorkflowStatus.TRANSCRIBED
         assert result.value == 2
 
+    def test_workflow_status_get_next_status_from_ready_for_review(self):
+        """Given: READY_FOR_REVIEW status
+        When: Calling get_next_status()
+        Then: Returns APPROVED (value 7)
+        """
+        result = WorkflowStatus.READY_FOR_REVIEW.get_next_status()
+        assert result == WorkflowStatus.APPROVED
+        assert result.value == 7
+
+    def test_workflow_status_get_next_status_from_approved(self):
+        """Given: APPROVED status
+        When: Calling get_next_status()
+        Then: Returns PUBLISHED (value 8)
+        """
+        result = WorkflowStatus.APPROVED.get_next_status()
+        assert result == WorkflowStatus.PUBLISHED
+        assert result.value == 8
+
     def test_workflow_status_get_next_status_from_published_returns_self(self):
         """Given: PUBLISHED status (final state)
         When: Calling get_next_status()
@@ -51,7 +77,7 @@ class TestWorkflowStatus:
         """
         result = WorkflowStatus.PUBLISHED.get_next_status()
         assert result == WorkflowStatus.PUBLISHED
-        assert result.value == 6
+        assert result.value == 8
 
     def test_workflow_status_label_returns_chinese_text(self):
         """Given: WorkflowStatus enum
