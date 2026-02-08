@@ -17,7 +17,7 @@ from typing import List, Optional, Dict, Any
 
 from sqlalchemy.orm import Session
 
-from app.models import Episode, Chapter, TranscriptCue, MarketingPost, PublicationRecord
+from app.models import Episode, Chapter, TranscriptCue, MarketingPost, PublicationRecord, AudioSegment
 from app.config import NOTION_API_KEY, NOTION_PARENT_PAGE_ID, NOTION_API_VERSION
 
 try:
@@ -156,9 +156,13 @@ class NotionPublisher:
                 )
                 blocks.append(heading_block)
 
-                # 获取字幕并渲染
-                cues = self.db.query(TranscriptCue).filter(
-                    TranscriptCue.chapter_id == chapter.id
+                # 获取字幕并渲染（使用时间范围而非chapter_id，确保所有cues都被发布）
+                cues = self.db.query(TranscriptCue).join(
+                    AudioSegment, TranscriptCue.segment_id == AudioSegment.id
+                ).filter(
+                    AudioSegment.episode_id == episode.id,
+                    TranscriptCue.start_time >= chapter.start_time,
+                    TranscriptCue.start_time < chapter.end_time
                 ).order_by(TranscriptCue.start_time).all()
 
                 transcript_blocks = self.render_transcripts_table(cues, language_code="zh")
@@ -196,10 +200,8 @@ class NotionPublisher:
                     chapter_num = chapter.chapter_index + 1
                     block_id = chapter_block_ids.get(chapter_num)
 
-                    # 截取摘要
+                    # 显示完整摘要（不截断，与Obsidian保持一致）
                     summary = chapter.summary or ""
-                    if len(summary) > 80:
-                        summary = summary[:80] + "..."
 
                     # 使用 display_title
                     chapter_display_title = chapter.display_title(episode)
@@ -275,7 +277,7 @@ class NotionPublisher:
         records = []
         for post in posts:
             try:
-                # 创建页面
+                # 创建页面（使用title参数用于营销文案）
                 page_id = self.create_episode_page(
                     title=post.title,
                     parent_page_id=self.parent_page_id
@@ -333,23 +335,32 @@ class NotionPublisher:
 
     def create_episode_page(
         self,
-        episode: Episode,
+        episode: Optional[Episode] = None,
         parent_page_id: Optional[str] = None,
-        parent_type: str = "page_id"
+        parent_type: str = "page_id",
+        title: Optional[str] = None
     ) -> str:
         """
         创建 Notion 页面
 
         Args:
-            episode: Episode 对象（使用 display_title）
+            episode: Episode 对象（使用 display_title）- 优先使用
             parent_page_id: 父节点 ID（默认使用配置中的 parent_page_id）
             parent_type: 父节点类型（"page_id" 或 "database_id"）
+            title: 页面标题（用于营销文案等场景，不传递episode时使用）
 
         Returns:
             str: 创建的页面 ID
         """
         parent_id = parent_page_id or self.parent_page_id
-        display_title = episode.display_title
+
+        # 确定页面标题
+        if episode:
+            display_title = episode.display_title
+        elif title:
+            display_title = title
+        else:
+            raise ValueError("必须提供 episode 或 title 参数")
 
         # Notion API 要求 parent 结构为：{"type": "page_id", "page_id": "xxx"}
         # 或者 {"type": "database_id", "database_id": "xxx"}
@@ -412,10 +423,8 @@ class NotionPublisher:
 
         # 添加每个章节
         for i, chapter in enumerate(chapters):
-            # 截取摘要
+            # 显示完整摘要（不截断，与Obsidian保持一致）
             summary = chapter.summary or ""
-            if len(summary) > 80:
-                summary = summary[:80] + "..."
 
             # 使用 display_title
             chapter_display_title = chapter.display_title(episode)
@@ -552,22 +561,16 @@ class NotionPublisher:
         """
         格式化 speaker 名称
 
-        将 SPEAKER_00 格式转换为 Speaker1 格式
+        保持原始格式，与Obsidian导出一致
 
         Args:
             speaker: 原始 speaker 标识符
 
         Returns:
-            str: 格式化后的 speaker 名称
+            str: 格式化后的 speaker 名称（与Obsidian一致）
         """
-        # 如果是 SPEAKER_XX 格式，转换为 Speaker1 格式
-        if speaker.startswith("SPEAKER_"):
-            try:
-                num = int(speaker.split("_")[1])
-                return f"Speaker{num + 1}："
-            except (ValueError, IndexError):
-                return f"{speaker}："
-        return f"{speaker}："
+        # 直接返回原始speaker标识符，与Obsidian保持一致
+        return f"{speaker}"
 
     # ========================================================================
     # 私有辅助方法 - Block 创建

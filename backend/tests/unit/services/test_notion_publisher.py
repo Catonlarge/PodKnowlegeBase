@@ -356,19 +356,28 @@ class TestCreateEpisodePage:
     """测试 create_episode_page() 方法"""
 
     def test_create_episode_page_returns_page_id(
-        self, notion_publisher, mock_notion_client
+        self, notion_publisher, mock_notion_client, test_session
     ):
         """
-        Given: Episode 标题和父页面 ID
+        Given: Episode 对象和父页面 ID
         When: 调用 create_episode_page
         Then: 返回 Notion 页面 ID
         """
-        # Arrange
+        # Arrange - 创建测试 Episode
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test_hash",
+            duration=60.0,
+            workflow_status=WorkflowStatus.PUBLISHED.value
+        )
+        test_session.add(episode)
+        test_session.flush()
+
         mock_notion_client.pages.create.return_value = {"id": "page_456"}
 
         # Act
         page_id = notion_publisher.create_episode_page(
-            title="Test Episode",
+            episode=episode,
             parent_page_id="parent_123"
         )
 
@@ -377,19 +386,28 @@ class TestCreateEpisodePage:
         mock_notion_client.pages.create.assert_called_once()
 
     def test_create_episode_page_with_database_parent(
-        self, notion_publisher, mock_notion_client
+        self, notion_publisher, mock_notion_client, test_session
     ):
         """
         Given: 使用 database_id 作为父节点
         When: 调用 create_episode_page
         Then: 正确设置 parent 为 database_id
         """
-        # Arrange
+        # Arrange - 创建测试 Episode
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test_hash",
+            duration=60.0,
+            workflow_status=WorkflowStatus.PUBLISHED.value
+        )
+        test_session.add(episode)
+        test_session.flush()
+
         mock_notion_client.pages.create.return_value = {"id": "page_789"}
 
         # Act
         page_id = notion_publisher.create_episode_page(
-            title="Test Episode",
+            episode=episode,
             parent_page_id="database_123",
             parent_type="database_id"  # Notion API 使用 database_id
         )
@@ -409,16 +427,26 @@ class TestCreateEpisodePage:
 class TestRenderChaptersBlock:
     """测试 render_chapters_block() 方法"""
 
-    def test_render_chapters_block_creates_navigation_list(self, notion_publisher):
+    def test_render_chapters_block_creates_navigation_list(self, notion_publisher, test_session):
         """
-        Given: Chapter 列表
+        Given: Chapter 列表和 Episode 对象
         When: 调用 render_chapters_block
         Then: 返回单个 callout 块，包含所有章节导航
         """
-        # Arrange
+        # Arrange - 创建 Episode
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test_hash",
+            duration=600.0,
+            workflow_status=WorkflowStatus.PUBLISHED.value
+        )
+        test_session.add(episode)
+        test_session.flush()
+
         chapters = [
             Chapter(
                 id=1,
+                episode_id=episode.id,
                 chapter_index=0,
                 title="Chapter 1",
                 summary="Summary 1",
@@ -428,6 +456,7 @@ class TestRenderChaptersBlock:
             ),
             Chapter(
                 id=2,
+                episode_id=episode.id,
                 chapter_index=1,
                 title="Chapter 2",
                 summary="Summary 2",
@@ -438,35 +467,55 @@ class TestRenderChaptersBlock:
         ]
 
         # Act
-        blocks = notion_publisher.render_chapters_block(chapters)
+        blocks = notion_publisher.render_chapters_block(chapters, episode)
 
         # Assert - render_chapters_block 返回单个 callout 块
         assert len(blocks) == 1
         assert blocks[0]["type"] == "callout"
         assert blocks[0]["callout"]["color"] == "blue_background"
 
-    def test_render_chapters_block_empty_list(self, notion_publisher):
+    def test_render_chapters_block_empty_list(self, notion_publisher, test_session):
         """
         Given: 空的 Chapter 列表
         When: 调用 render_chapters_block
         Then: 返回空列表
         """
+        # Arrange - 创建 Episode（即使为空也需要 episode 参数）
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test_hash",
+            duration=600.0,
+            workflow_status=WorkflowStatus.PUBLISHED.value
+        )
+        test_session.add(episode)
+        test_session.flush()
+
         # Act
-        blocks = notion_publisher.render_chapters_block([])
+        blocks = notion_publisher.render_chapters_block([], episode)
 
         # Assert
         assert blocks == []
 
-    def test_render_chapters_block_includes_summary(self, notion_publisher):
+    def test_render_chapters_block_includes_summary(self, notion_publisher, test_session):
         """
         Given: Chapter 包含 summary
         When: 调用 render_chapters_block
         Then: callout 块中包含 summary 内容
         """
-        # Arrange
+        # Arrange - 创建 Episode
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test_hash",
+            duration=600.0,
+            workflow_status=WorkflowStatus.PUBLISHED.value
+        )
+        test_session.add(episode)
+        test_session.flush()
+
         chapters = [
             Chapter(
                 id=1,
+                episode_id=episode.id,
                 chapter_index=0,
                 title="Chapter 1",
                 summary="Test summary content",
@@ -477,7 +526,7 @@ class TestRenderChaptersBlock:
         ]
 
         # Act
-        blocks = notion_publisher.render_chapters_block(chapters)
+        blocks = notion_publisher.render_chapters_block(chapters, episode)
 
         # Assert - 验证 callout 内容包含 summary 和章节标题
         # rich_text 现在是数组，需要遍历检查
@@ -486,16 +535,67 @@ class TestRenderChaptersBlock:
         assert "Test summary content" in all_content
         assert "Chapter 1" in all_content
 
-    def test_render_chapters_block_no_timestamp_column(self, notion_publisher):
+    def test_render_chapters_block_summary_not_truncated(self, notion_publisher, test_session):
         """
-        Given: Chapter 列表
+        Given: Chapter 包含超长 summary（超过80字符）
         When: 调用 render_chapters_block
-        Then: 不包含时间戳列
+        Then: summary 不被截断，显示完整内容（与Obsidian一致）
         """
-        # Arrange
+        # Arrange - 创建 Episode
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test_hash",
+            duration=600.0,
+            workflow_status=WorkflowStatus.PUBLISHED.value
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        # 创建一个超过80字符的 summary
+        long_summary = "A" * 100 + " 这是一段非常长的章节摘要，应该完整显示而不被截断，与Obsidian导出保持一致。"
         chapters = [
             Chapter(
                 id=1,
+                episode_id=episode.id,
+                chapter_index=0,
+                title="Chapter 1",
+                summary=long_summary,
+                start_time=0.0,
+                end_time=300.0,
+                status="completed"
+            )
+        ]
+
+        # Act
+        blocks = notion_publisher.render_chapters_block(chapters, episode)
+
+        # Assert - 验证 summary 完整显示，没有被截断为80字符
+        rich_text_items = blocks[0]["callout"]["rich_text"]
+        all_content = "".join(item["text"]["content"] for item in rich_text_items)
+        assert long_summary in all_content
+        # 确保"..."截断标记不存在
+        assert "..." not in all_content or len(all_content) >= len(long_summary)
+
+    def test_render_chapters_block_no_timestamp_column(self, notion_publisher, test_session):
+        """
+        Given: Chapter 列表和 Episode 对象
+        When: 调用 render_chapters_block
+        Then: 不包含时间戳列
+        """
+        # Arrange - 创建 Episode
+        episode = Episode(
+            title="Test Episode",
+            file_hash="test_hash",
+            duration=600.0,
+            workflow_status=WorkflowStatus.PUBLISHED.value
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        chapters = [
+            Chapter(
+                id=1,
+                episode_id=episode.id,
                 chapter_index=0,
                 title="Chapter 1",
                 summary="Summary 1",
@@ -506,7 +606,7 @@ class TestRenderChaptersBlock:
         ]
 
         # Act
-        blocks = notion_publisher.render_chapters_block(chapters)
+        blocks = notion_publisher.render_chapters_block(chapters, episode)
 
         # Assert - 验证不是表格格式（不包含 table 类型）
         assert not any(block.get("type") == "table" for block in blocks)
@@ -616,10 +716,10 @@ class TestRenderTranscriptsTable:
         blocks = notion_publisher.render_transcripts_table(cues, language_code="zh")
 
         # Assert - 2 speakers，每个 speaker 有标题 + 字幕
-        assert len(blocks) == 4  # Speaker1 + cue1 + Speaker2 + cue2
-        # 验证 speaker 标题
-        assert "Speaker1：" in blocks[0]["callout"]["rich_text"][0]["text"]["content"]
-        assert "Speaker2：" in blocks[2]["callout"]["rich_text"][0]["text"]["content"]
+        assert len(blocks) == 4  # SPEAKER_00 + cue1 + SPEAKER_01 + cue2
+        # 验证 speaker 标题（保持原始格式）
+        assert "SPEAKER_00" in blocks[0]["callout"]["rich_text"][0]["text"]["content"]
+        assert "SPEAKER_01" in blocks[2]["callout"]["rich_text"][0]["text"]["content"]
         # 所有 block 都是 callout 类型
         assert all(block["type"] == "callout" for block in blocks)
 
@@ -777,6 +877,40 @@ class TestPublishMarketingPosts:
 # ========================================================================
 # TestGetNotionBlockUrl 测试组
 # ========================================================================
+
+class TestFormatSpeakerName:
+    """测试 _format_speaker_name() 静态方法"""
+
+    def test_format_speaker_name_preserves_original_format(self):
+        """
+        Given: 原始 speaker 标识符 SPEAKER_00
+        When: 调用 _format_speaker_name
+        Then: 返回原始格式，与 Obsidian 一致
+        """
+        # Arrange
+        speaker = "SPEAKER_00"
+
+        # Act
+        result = NotionPublisher._format_speaker_name(speaker)
+
+        # Assert - 直接返回原始格式，不转换
+        assert result == "SPEAKER_00"
+
+    def test_format_speaker_name_speaker_01(self):
+        """
+        Given: 原始 speaker 标识符 SPEAKER_01
+        When: 调用 _format_speaker_name
+        Then: 返回原始格式 SPEAKER_01
+        """
+        # Arrange
+        speaker = "SPEAKER_01"
+
+        # Act
+        result = NotionPublisher._format_speaker_name(speaker)
+
+        # Assert
+        assert result == "SPEAKER_01"
+
 
 class TestGetNotionBlockUrl:
     """测试 _get_notion_block_url() 静态方法"""
