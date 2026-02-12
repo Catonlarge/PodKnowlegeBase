@@ -6,6 +6,16 @@
 
 ## 2026-02-12
 
+### Fix - 营销文案兜底改用章节小结
+
+**问题:** 兜底逻辑使用 `episode.ai_summary`，但该字段在数据库中常为空；日志显示 AI 已生成内容，但 Obsidian 文件仍为 fallback。
+
+**修改文件:**
+- `backend/app/services/marketing_service.py` - 新增 `_get_chapter_summaries()`，兜底内容改为所有章节 `summary` 拼接；无章节或全空则用 `episode.title`
+- `backend/tests/unit/services/test_marketing_fallback.py` - 更新用例以适配章节小结兜底逻辑
+
+---
+
 ### Feat - 按场景配置 Temperature
 
 **修改文件:**

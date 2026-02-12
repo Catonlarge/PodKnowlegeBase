@@ -634,8 +634,7 @@ class MarketingService:
             )
 
         except Exception as e:
-            logger.error(f"AI 调用失败: {e}，直接使用摘要兜底")
-            # ✅ 直接使用摘要兜底，不做部分解析
+            logger.exception(f"AI 调用失败: {e}，使用章节小结兜底")
             return self._generate_fallback_multi_angle_copy(episode, key_quotes)
 
     def _convert_structured_response_to_marketing_copy(
@@ -675,6 +674,23 @@ class MarketingService:
 
         return angle_copies
 
+    def _get_chapter_summaries(self, episode_id: int) -> str:
+        """
+        获取 Episode 所有章节小结的拼接内容
+
+        Args:
+            episode_id: Episode ID
+
+        Returns:
+            str: 所有章节 summary 按顺序拼接，无章节或全空则返回空字符串
+        """
+        chapters = self.db.query(Chapter).filter(
+            Chapter.episode_id == episode_id
+        ).order_by(Chapter.chapter_index).all()
+
+        parts = [ch.summary for ch in chapters if ch.summary and ch.summary.strip()]
+        return "\n\n".join(parts) if parts else ""
+
     def _generate_fallback_multi_angle_copy(
         self,
         episode: Episode,
@@ -683,17 +699,17 @@ class MarketingService:
         """
         生成备用多角度文案（当 LLM 调用失败时）
 
-        ✅ 使用 episode.ai_summary 作为兜底内容
+        兜底内容：所有章节小结拼接；若无章节或全空则用 episode.title
 
         Args:
             episode: Episode 对象
             key_quotes: 金句列表
 
         Returns:
-            List[MarketingCopy]: 单个备用文案对象（基于摘要）
+            List[MarketingCopy]: 单个备用文案对象（基于章节小结）
         """
-        # 使用 episode.ai_summary 或 episode.title 作为内容
-        content = episode.ai_summary or episode.title
+        chapter_summaries = self._get_chapter_summaries(episode.id)
+        content = chapter_summaries.strip() if chapter_summaries else episode.title
 
         # 限制标题长度
         title = episode.title[:30] if len(episode.title) > 30 else episode.title
