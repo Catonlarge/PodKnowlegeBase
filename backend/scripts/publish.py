@@ -49,33 +49,29 @@ def main():
     console.print(f"[dim]Episode ID: {args.id}[/dim]")
     console.print()
 
-    db = get_session()
+    with get_session() as db:
+        try:
+            publisher = WorkflowPublisher(db, console)
+            episode = publisher.publish_workflow(args.id)
 
-    try:
-        publisher = WorkflowPublisher(db, console)
-        episode = publisher.publish_workflow(args.id)
+            console.print()
+            console.print(f"[green]发布成功![/green] Episode ID: {episode.id}")
+            console.print(f"[dim]状态: {episode.workflow_status.label}[/dim]")
+            console.print()
 
-        console.print()
-        console.print(f"[green]发布成功![/green] Episode ID: {episode.id}")
-        console.print(f"[dim]状态: {episode.workflow_status.label}[/dim]")
-        console.print()
+            return 0
 
-        return 0
+        except KeyboardInterrupt:
+            console.print()
+            console.print("[yellow]已取消[/yellow]")
+            return 130
 
-    except KeyboardInterrupt:
-        console.print()
-        console.print("[yellow]已取消[/yellow]")
-        return 130
-
-    except Exception as e:
-        console.print()
-        console.print(f"[red]错误: {e}[/red]")
-        import traceback
-        console.print(traceback.format_exc())
-        return 1
-
-    finally:
-        db.close()
+        except Exception as e:
+            console.print()
+            console.print(f"[red]错误: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+            return 1
 
 
 if __name__ == "__main__":
