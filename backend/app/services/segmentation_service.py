@@ -20,90 +20,112 @@ from app.config import (
     AI_TEMPERATURE_SEGMENTATION
 )
 from app.services.ai.structured_llm import StructuredLLM
-from app.services.ai.schemas.segmentation_schema import SegmentationResponse
+from app.services.ai.schemas.segmentation_schema import SegmentationResponse, Chapter
 from app.services.ai.validators.segmentation_validator import SegmentationValidator
 
 logger = logging.getLogger(__name__)
 
 # 兜底策略常量（折中：优先完整，仅在 API 失败时重试采样，且采样粒度温和）
-FALLBACK_MAX_CUES = 500   # 采样兜底时 500 条（75 分钟约 9 秒/条，保留更多语义）
+FALLBACK_MAX_CUES = 2000  # 采样兜底时 2000 条（75 分钟约 2.25 秒/条，保留更多语义与转折点）
 
-# Prompt 模板
+# Prompt 模板 - Chain-of-Thought 两步骤 + Few-shot
 SEGMENTATION_PROMPT_FULL = """
 你是一个专业的音频内容分析师。请分析以下英文转录文本，进行**自适应语义章节划分**。
 
 **输入：**
-- 英文 Transcript（完整内容，含时间戳）
+- 英文 Transcript（完整内容，含时间戳 [MM:SS]）
 - 总时长：{duration} 分钟（{duration_seconds} 秒）
 
-**核心原则（强制执行）：**
-1. **拒绝机械式切分**：章节划分必须依据内容的语义结构，而非时间区间
-2. **保持语义完整**：每个章节应该是一个完整的语义单元，避免把一个完整话题切碎
-3. **章节数量上限（严格执行）**：
-   - **短内容（< 8分钟）**：最多 **2 个章节**
-   - **中等内容（8-20分钟）**：最多 **4 个章节**
-   - **长内容（> 20分钟）**：最多 **6 个章节**
-4. **宁少勿多**：如果内容是一个连贯的对话，**可以不划分**（保留为单一章节）
+**时间戳格式：** [MM:SS] 表示 分:秒，如 [25:00]=1500秒，[37:30]=2250秒
 
-**任务：**
-1. 分析完整内容的语义转折点和话题变化，划分章节
-2. 章节的 start_time 和 end_time **必须使用秒作为单位**，基于总秒数（{duration_seconds}秒）进行合理分配
-3. 直接输出**中文**的章节标题和摘要
+**核心原则：**
+1. 章节划分依据语义转折点，拒绝机械切分
+2. 章节数量上限：短内容最多2章，中等最多4章，长内容最多6章
+3. 时间范围必须覆盖 [0, {duration_seconds}秒] 完整区间
 
-**切分决策示例：**
-- 错误：75分钟内容只划分前面2分钟；5分钟内容切分成3个以上章节
-- 正确：75分钟内容（4500秒）划分成覆盖完整时长的章节；5分钟内容切分成1-2个章节
+**Chain-of-Thought 两步骤思路：**
 
-**当前内容判定：**
-- 总时长：{duration} 分钟（{duration_seconds} 秒）
-- 最大章节数：{max_chapters} 个
-- **重要**：输出的章节时间范围必须覆盖 [0, {duration_seconds}秒] 的完整区间
+**第一步：查看大概的章节划分，输出时间戳范围**
+- 通读 transcript，识别语义转折点（话题切换、主持人换方向等）
+- 根据 [MM:SS] 时间戳确定各章节的 start_time、end_time（秒）
+- 将推理过程写入 step1_reasoning
 
-**输出格式（JSON）：**
+**第二步：依据每个范围的内容，输出这章对应的标题**（每章必填 reasoning，包含三子步）
+1. **锁定时间范围**：start_time～end_time 对应 transcript 中的 [MM:SS]
+2. **归纳该段主题**：列出该时间段讨论的核心话题
+3. **推导标题**：根据归纳提炼 15-25 字中文标题，**需包含 1-2 个关键词或具体事件**，避免过于笼统（如单用「开场」「收尾」）
+
+---
+
+**Few-shot 示例：**
+
+假设某播客 transcript 片段如下（总时长 10 分钟）：
+```
+[00:00] Host: Today we talk about AI talent war. Meta is offering $100M...
+[02:30] Guest: At Anthropic we are less affected because people care about mission...
+[05:00] Host: OK I want to go in a different direction. Why did you leave OpenAI?
+[05:30] Guest: We felt safety wasn't the top priority there. Sam talked about three tribes...
+[08:00] Host: Quick fire round. Best book? Guest: Good Strategy Bad Strategy...
+```
+
+**期望输出：**
 ```json
 {{
+  "step1_reasoning": "第一步：发现转折点位于 [05:00] (Host 明确换方向「go in a different direction」)、[08:00] (进入闪电问答)，故划分 0-300s、300-480s、480-600s 三章",
   "chapters": [
     {{
-      "title": "开场介绍",
-      "summary": "主持人介绍了今天的主题...",
       "start_time": 0.0,
-      "end_time": 720.5
+      "end_time": 300.0,
+      "reasoning": "第二步：1) 锁定 0-300s 对应 [00:00]-[05:00]；2) 该段讨论：AI 人才争夺、Meta 挖角、Anthropic 使命留人；3) 故标题「Meta 天价挖角与 Anthropic 使命留人」",
+      "title": "Meta 天价挖角与 Anthropic 使命留人",
+      "summary": "主持人引出 AI 人才争夺话题，嘉宾解释 Anthropic 因使命驱动受冲击较小"
+    }},
+    {{
+      "start_time": 300.0,
+      "end_time": 480.0,
+      "reasoning": "第二步：1) 锁定 300-480s 对应 [05:00]-[08:00]；2) 该段讨论：换方向、离开 OpenAI 原因、安全非最高优先级、三部落；3) 故标题「因安全非最高优先级而离开 OpenAI」",
+      "title": "因安全非最高优先级而离开 OpenAI",
+      "summary": "主持人换方向后，嘉宾详述因安全非最高优先级而离开 OpenAI 的经过"
+    }},
+    {{
+      "start_time": 480.0,
+      "end_time": 600.0,
+      "reasoning": "第二步：1) 锁定 480-600s 对应 [08:00]-[10:00]；2) 该段讨论：闪电问答、书籍推荐；3) 故标题「闪电问答：书籍推荐与人生信条」",
+      "title": "闪电问答：书籍推荐与人生信条",
+      "summary": "闪电问答环节，嘉宾推荐书籍"
     }}
   ]
 }}
 ```
-**注意：start_time 和 end_time 必须是秒数**。
+
+---
+
+**请仿照上述格式，对下方 Transcript 进行分析并输出 JSON：**
 
 **Transcript:**
 {transcript}
 """
 
 SEGMENTATION_PROMPT_SAMPLED = """
-你是一个专业的音频内容分析师。请分析以下英文转录文本，进行**自适应语义章节划分**。
+你是一个专业的音频内容分析师。以下是从完整内容均匀采样的 transcript 片段，请推断完整内容的章节划分。
 
-**输入：**
-- 英文 Transcript（基于时间的均匀采样，含时间戳）
-- 总时长：{duration} 分钟（{duration_seconds} 秒）
-- 采样说明：以下是从完整内容中均匀采样的代表性片段，请根据采样推断完整内容的章节划分
+**输入：** 采样 Transcript（含时间戳 [MM:SS]），总时长 {duration} 分钟（{duration_seconds} 秒）
 
-**核心原则（强制执行）：**
-1. **拒绝机械式切分**：章节划分必须依据内容的语义结构，而非时间区间
-2. **保持语义完整**：每个章节应该是一个完整的语义单元
-3. **章节数量上限**：短内容最多2章，中等最多4章，长内容最多6章
-4. **宁少勿多**：如果内容连贯，可以不划分
+**时间戳格式：** [MM:SS] = 分:秒，如 [25:00]=1500秒
 
-**任务：**
-1. 分析采样内容的语义转折点，**推断**完整内容的章节划分
-2. start_time 和 end_time 使用秒，覆盖 [0, {duration_seconds}秒]
-3. 直接输出**中文**的章节标题和摘要
+**Chain-of-Thought 两步骤：**
+1. **第一步**：查看大概的章节划分，输出时间戳范围；将推理写入 step1_reasoning
+2. **第二步**：依据每个范围的内容，输出该章对应的标题；每章 reasoning 需包含：
+   - 1) 锁定时间范围：对应 [MM:SS]
+   - 2) 归纳该段主题：列出核心话题
+   - 3) 推导标题：15-25 字，含 1-2 个关键词或具体事件，避免笼统
 
-**当前内容判定：**
-- 总时长：{duration} 分钟（{duration_seconds} 秒）
-- 最大章节数：{max_chapters} 个
+**Few-shot 参考（reasoning 格式）：**
+某章 reasoning 示例："第二步：1) 锁定 300-480s 对应 [05:00]-[08:00]；2) 该段讨论：换方向、离开 OpenAI、安全非最高优先级；3) 故标题「因安全非最高优先级而离开 OpenAI」"
 
 **输出格式（JSON）：**
 ```json
-{{"chapters": [{{"title": "...", "summary": "...", "start_time": 0.0, "end_time": 720.5}}]}}
+{{"step1_reasoning": "第一步：...", "chapters": [{{"start_time": 0.0, "end_time": 750.0, "reasoning": "第二步：1) 锁定... 2) 该段讨论... 3) 故标题「...」", "title": "...", "summary": "..."}}]}}
 ```
 
 **Transcript (采样):**
@@ -266,7 +288,7 @@ class SegmentationService:
 
         return chapters
 
-    def preview_segmentation(self, episode_id: int) -> List[Dict]:
+    def preview_segmentation(self, episode_id: int) -> Dict:
         """
         预览章节切分结果（不写入数据库，仅调用 AI 返回结果）
 
@@ -276,7 +298,7 @@ class SegmentationService:
             episode_id: Episode ID
 
         Returns:
-            List[Dict]: 章节列表，每项含 title, summary, start_time, end_time
+            Dict: {"chapters": [...], "step1_reasoning": "..."} 章节列表与第一步推理
         """
         episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
         if not episode:
@@ -320,15 +342,19 @@ class SegmentationService:
             use_sampling=use_sampling
         )
 
-        return [
-            {
-                "title": ch.title,
-                "summary": ch.summary,
-                "start_time": ch.start_time,
-                "end_time": ch.end_time,
-            }
-            for ch in response.chapters
-        ]
+        return {
+            "chapters": [
+                {
+                    "title": ch.title,
+                    "summary": ch.summary,
+                    "start_time": ch.start_time,
+                    "end_time": ch.end_time,
+                    "reasoning": getattr(ch, "reasoning", None) or "",
+                }
+                for ch in response.chapters
+            ],
+            "step1_reasoning": getattr(response, "step1_reasoning", None) or "",
+        }
 
     def _sample_cues_by_time(
         self,
@@ -389,14 +415,13 @@ class SegmentationService:
         """
         调用 AI 进行章节切分，带重试兜底。
 
-        策略：完整模式失败时，重试采样模式；再失败则单章节兜底。
+        策略：单阶段 CoT 模式；失败且为 context 类错误时重试采样；最后单章节兜底。
         """
         try:
             response = self._call_ai_for_segmentation(prompt, total_duration=episode.duration)
             return SegmentationValidator.validate(response, total_duration=episode.duration)
         except Exception as e:
             error_str = str(e).lower()
-            # 判断是否为「内容过长」类错误（context_length 等）
             is_context_error = (
                 "context" in error_str
                 or "token" in error_str
@@ -424,7 +449,9 @@ class SegmentationService:
                     transcript=transcript_text
                 )
                 try:
-                    response = self._call_ai_for_segmentation(retry_prompt, total_duration=episode.duration)
+                    response = self._call_ai_for_segmentation(
+                        retry_prompt, total_duration=episode.duration
+                    )
                     return SegmentationValidator.validate(response, total_duration=episode.duration)
                 except Exception as retry_e:
                     logger.warning(f"采样模式也失败: {retry_e}")

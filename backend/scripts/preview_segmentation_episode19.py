@@ -53,7 +53,10 @@ def main():
             print("错误: StructuredLLM 未初始化，请检查 MOONSHOT_API_KEY")
             sys.exit(1)
 
-        chapters = service.preview_segmentation(EPISODE_ID)
+        result = service.preview_segmentation(EPISODE_ID)
+
+    chapters = result["chapters"]
+    step1_reasoning = result.get("step1_reasoning", "")
 
     lines = [
         "# Episode 19 章节切分预览（大模型输出）",
@@ -64,9 +67,20 @@ def main():
         "",
         "---",
         "",
-        "## 章节概览（含时间戳，用于核对标题与内容对应）",
-        "",
     ]
+    if step1_reasoning:
+        lines.extend([
+            "## 第一步：章节划分与时间戳范围",
+            "",
+            f"> **step1_reasoning**: {step1_reasoning}",
+            "",
+            "---",
+            "",
+        ])
+    lines.extend([
+        "## 第二步：各章节标题与推导思路",
+        "",
+    ])
 
     for i, ch in enumerate(chapters, 1):
         start_ts = _format_timestamp(ch["start_time"])
@@ -74,6 +88,7 @@ def main():
         start_s = int(ch["start_time"])
         end_s = int(ch["end_time"])
         duration_min = (ch["end_time"] - ch["start_time"]) / 60
+        reasoning = ch.get("reasoning", "")
 
         lines.extend([
             f"### 章节 {i}: [{start_ts}] {ch['title']}",
@@ -83,6 +98,13 @@ def main():
             f"**时间范围**: {start_s}s - {end_s}s ({start_ts} - {end_ts})",
             f"**时长**: {duration_min:.1f} 分钟",
             "",
+        ])
+        if reasoning:
+            lines.extend([
+                f"**推导思路 (CoT)**: {reasoning}",
+                "",
+            ])
+        lines.extend([
             "---",
             "",
         ])
