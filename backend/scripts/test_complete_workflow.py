@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from sqlalchemy.orm import Session
 from rich.console import Console
 
-from app.database import get_session, _session_factory
+from app.database import get_session, init_database
 from app.config import (
     MOONSHOT_API_KEY,
     MOONSHOT_BASE_URL,
@@ -63,7 +63,6 @@ from app.services.translation_service import TranslationService
 from app.services.obsidian_service import ObsidianService
 from app.services.marketing_service import MarketingService
 from app.services.subtitle_proofreading_service import SubtitleProofreadingService
-from app.services.ai.ai_service import AIService
 from app.utils.file_utils import calculate_md5_sync, get_audio_duration
 
 
@@ -74,7 +73,6 @@ class CompleteWorkflowTester:
         """初始化测试器"""
         self.db = db
         self.console = console or Console()
-        self.ai_service: Optional[AIService] = None
         self.episode: Optional[Episode] = None
 
     def check_environment(self) -> bool:
@@ -230,15 +228,8 @@ class CompleteWorkflowTester:
             self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
             return
 
-        # 创建 LLM 客户端
-        from openai import OpenAI
-        llm_client = OpenAI(
-            api_key=MOONSHOT_API_KEY,
-            base_url=MOONSHOT_BASE_URL
-        )
-
-        # 创建校对服务
-        service = SubtitleProofreadingService(self.db, llm_service=llm_client)
+        # 创建校对服务（使用 config 中的 provider 配置）
+        service = SubtitleProofreadingService(self.db, provider="moonshot")
 
         # 执行校对
         self.console.print(f"开始字幕校对: {self.episode.title}")
@@ -255,35 +246,58 @@ class CompleteWorkflowTester:
         self.db.commit()
         self.db.refresh(self.episode)
 
-        # 显示修正预览
+        # 显示修正预览（correction 可能是 dict 或对象）
         if result.corrections:
             self.console.print("\n修正预览（前 3 条）:")
             for correction in result.corrections[:3]:
-                self.console.print(f"  [{correction.cue_id}] {correction.original_text[:40]}...")
-                self.console.print(f"    -> {correction.corrected_text[:40]}...")
+                if isinstance(correction, dict):
+                    cue_id = correction.get("cue_id", "")
+                    orig = (correction.get("original_text") or "")[:40]
+                    fixed = (correction.get("corrected_text") or "")[:40]
+                else:
+                    cue_id = correction.cue_id
+                    orig = (correction.original_text or "")[:40]
+                    fixed = (correction.corrected_text or "")[:40]
+                self.console.print(f"  [{cue_id}] {orig}...")
+                self.console.print(f"    -> {fixed}...")
 
-    def segment_content(self) -> None:
-        """Step 3: 语义章节切分"""
+    def segment_content(self, force_resegment: bool = False) -> None:
+        """Step 3: 语义章节切分
+
+        当 force_resegment=True 时，即使已分章也会删除旧章节并重新调用 AI，
+        行为与 preview_segmentation_episode19.py 一致（每次重新生成）。
+        """
         self.console.print()
         self.console.print("[bold cyan]Step 3: 语义章节切分[/bold cyan]")
         self.console.print("-" * 60)
 
-        # 检查状态
-        if self.episode.workflow_status >= WorkflowStatus.SEGMENTED.value:
+        # 检查状态（force_resegment 时跳过，强制执行）
+        if not force_resegment and self.episode.workflow_status >= WorkflowStatus.SEGMENTED.value:
             self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
-            # 显示已有章节
             chapters = self.db.query(Chapter).filter(
                 Chapter.episode_id == self.episode.id
             ).all()
             self._display_chapter_preview(chapters)
             return
 
-        # 确保 AI 服务已初始化
-        if not self.ai_service:
-            self.ai_service = AIService(provider="moonshot")
+        # 强制重新切分：清除旧章节并回退状态
+        if force_resegment and self.episode.workflow_status >= WorkflowStatus.SEGMENTED.value:
+            cues = (
+                self.db.query(TranscriptCue)
+                .join(AudioSegment, AudioSegment.id == TranscriptCue.segment_id)
+                .filter(AudioSegment.episode_id == self.episode.id)
+            ).all()
+            for cue in cues:
+                cue.chapter_id = None
+            self.db.query(Chapter).filter(Chapter.episode_id == self.episode.id).delete(
+                synchronize_session=False
+            )
+            self.episode.workflow_status = WorkflowStatus.PROOFREAD.value
+            self.db.flush()
+            self.console.print("[yellow]已清除旧章节，强制重新切分[/yellow]")
 
-        # 创建章节切分服务
-        service = SegmentationService(self.db, ai_service=self.ai_service)
+        # 创建章节切分服务（使用 config 中的 provider 配置）
+        service = SegmentationService(self.db, provider="moonshot")
 
         # 执行章节切分
         self.console.print(f"开始章节切分: {self.episode.title}")
@@ -309,12 +323,8 @@ class CompleteWorkflowTester:
             self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
             return
 
-        # 确保 AI 服务已初始化
-        if not self.ai_service:
-            self.ai_service = AIService(provider="moonshot")
-
-        # 创建翻译服务
-        service = TranslationService(self.db, ai_service=self.ai_service)
+        # 创建翻译服务（使用 config 中的 provider 配置）
+        service = TranslationService(self.db, provider="moonshot")
 
         # 执行翻译
         self.console.print(f"开始批量翻译: {self.episode.title}")
@@ -494,7 +504,8 @@ class CompleteWorkflowTester:
         episode_id: Optional[int] = None,
         skip_proofreading: bool = False,
         skip_marketing: bool = False,
-        skip_notion: bool = False
+        skip_notion: bool = False,
+        force_resegment: bool = False
     ) -> Episode:
         """运行完整工作流
 
@@ -504,6 +515,7 @@ class CompleteWorkflowTester:
             skip_proofreading: 跳过字幕校对
             skip_marketing: 跳过营销文案生成
             skip_notion: 跳过 Notion 发布
+            force_resegment: 强制重新切分（清除旧章节并重新调用 AI，与 preview 脚本行为一致）
         """
         if not audio_path and not episode_id:
             raise ValueError("必须提供 audio_path 或 episode_id")
@@ -529,7 +541,7 @@ class CompleteWorkflowTester:
             self.console.print("[yellow]跳过字幕校对[/yellow]")
 
         # Step 4: 章节切分
-        self.segment_content()
+        self.segment_content(force_resegment=force_resegment)
 
         # Step 5: 翻译
         self.translate_content()
@@ -622,6 +634,8 @@ def main():
     parser.add_argument("--skip-marketing", action="store_true", help="跳过营销文案生成")
     parser.add_argument("--skip-notion", action="store_true", help="跳过 Notion 发布")
     parser.add_argument("--test-db", action="store_true", help="使用测试数据库")
+    parser.add_argument("--force-resegment", action="store_true",
+                        help="强制重新切分（清除旧章节并重新调用 AI，与 preview 脚本行为一致）")
 
     args = parser.parse_args()
 
@@ -646,32 +660,28 @@ def main():
     console.print()
 
     # 如果使用测试数据库，重新初始化数据库连接
+    # 必须通过 app.database 模块修改 _session_factory，否则 get_session() 仍用默认库
     if args.test_db:
+        import app.database as db_module
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
         from app.models.base import Base
 
-        # 使用临时测试数据库
+        init_database()
         test_db_path = BASE_DIR / "data" / "episodes_test.db"
         test_db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 创建测试数据库引擎
         test_engine = create_engine(
             f"sqlite:///{test_db_path}",
             echo=False,
             connect_args={"check_same_thread": False},
         )
-
-        # 创建新的 session factory
-        global _session_factory
-        _session_factory = sessionmaker(
+        db_module._session_factory = sessionmaker(
             bind=test_engine,
             autocommit=False,
             autoflush=False,
             expire_on_commit=False,
         )
-
-        # 创建表（如果不存在）
         Base.metadata.create_all(test_engine)
 
         console.print(f"[green]测试数据库: {test_db_path}[/green]")
@@ -683,12 +693,14 @@ def main():
             # 创建测试器
             tester = CompleteWorkflowTester(db, console)
 
-            # 运行完整工作流
+            # 运行完整工作流（默认不跳过 marketing）
             episode = tester.run_complete_workflow(
                 audio_path=args.audio,
                 episode_id=args.episode_id,
                 skip_proofreading=args.skip_proofreading,
-                skip_marketing=args.skip_marketing
+                skip_marketing=args.skip_marketing,
+                skip_notion=args.skip_notion,
+                force_resegment=args.force_resegment,
             )
 
             return 0

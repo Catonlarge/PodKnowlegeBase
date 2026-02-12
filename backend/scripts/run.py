@@ -5,11 +5,12 @@ Main Workflow Entry Script
 Orchestrates the complete workflow from YouTube URL to Obsidian document.
 
 Usage:
-    python scripts/run.py <URL> [--restart]
+    python scripts/run.py <URL> [--restart] [--force-resegment]
 
 Examples:
     python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
     python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --restart
+    python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --force-resegment
 """
 import sys
 import argparse
@@ -37,10 +38,13 @@ def main():
 示例:
   python scripts/run.py https://www.youtube.com/watch?v=xxx
   python scripts/run.py https://www.youtube.com/watch?v=xxx --restart
+  python scripts/run.py https://www.youtube.com/watch?v=xxx --force-resegment
         """
     )
     parser.add_argument("url", help="YouTube 视频 URL")
     parser.add_argument("--restart", action="store_true", help="强制重新开始（忽略断点续传）")
+    parser.add_argument("--force-resegment", action="store_true",
+                        help="强制重新切分（清除旧章节并重新调用 AI）")
 
     args = parser.parse_args()
 
@@ -52,35 +56,37 @@ def main():
     console.print(f"[dim]URL: {args.url}[/dim]")
     if args.restart:
         console.print("[yellow]模式: 强制重新开始[/yellow]")
+    if args.force_resegment:
+        console.print("[yellow]模式: 强制重新切分[/yellow]")
     console.print()
 
-    db = get_session()
+    with get_session() as db:
+        try:
+            runner = WorkflowRunner(db, console)
+            episode = runner.run_workflow(
+                args.url,
+                force_restart=args.restart,
+                force_resegment=args.force_resegment,
+            )
 
-    try:
-        runner = WorkflowRunner(db, console)
-        episode = runner.run_workflow(args.url, force_restart=args.restart)
+            console.print()
+            console.print(f"[green]成功![/green] Episode ID: {episode.id}")
+            console.print(f"[dim]状态: {episode.workflow_status.label}[/dim]")
+            console.print()
 
-        console.print()
-        console.print(f"[green]成功![/green] Episode ID: {episode.id}")
-        console.print(f"[dim]状态: {episode.workflow_status.label}[/dim]")
-        console.print()
+            return 0
 
-        return 0
+        except KeyboardInterrupt:
+            console.print()
+            console.print("[yellow]已取消[/yellow]")
+            return 130
 
-    except KeyboardInterrupt:
-        console.print()
-        console.print("[yellow]已取消[/yellow]")
-        return 130
-
-    except Exception as e:
-        console.print()
-        console.print(f"[red]错误: {e}[/red]")
-        import traceback
-        console.print(traceback.format_exc())
-        return 1
-
-    finally:
-        db.close()
+        except Exception as e:
+            console.print()
+            console.print(f"[red]错误: {e}[/red]")
+            import traceback
+            console.print(traceback.format_exc())
+            return 1
 
 
 if __name__ == "__main__":

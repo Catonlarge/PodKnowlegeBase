@@ -20,7 +20,7 @@ from app.config import (
     AI_TEMPERATURE_SEGMENTATION
 )
 from app.services.ai.structured_llm import StructuredLLM
-from app.services.ai.schemas.segmentation_schema import SegmentationResponse, Chapter
+from app.services.ai.schemas.segmentation_schema import SegmentationResponse, Chapter as ChapterSchema
 from app.services.ai.validators.segmentation_validator import SegmentationValidator
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ class SegmentationService:
 
         return chapters
 
-    def preview_segmentation(self, episode_id: int) -> Dict:
+    def preview_segmentation(self, episode_id: int, for_preview: bool = False) -> Dict:
         """
         预览章节切分结果（不写入数据库，仅调用 AI 返回结果）
 
@@ -296,6 +296,7 @@ class SegmentationService:
 
         Args:
             episode_id: Episode ID
+            for_preview: 若 True，跳过状态检查（供调试脚本预览任意已转录的 episode）
 
         Returns:
             Dict: {"chapters": [...], "step1_reasoning": "..."} 章节列表与第一步推理
@@ -309,7 +310,7 @@ class SegmentationService:
             WorkflowStatus.PROOFREAD.value,
             WorkflowStatus.SEGMENTED.value,  # 已分章也可预览（用于重新生成）
         ]
-        if episode.workflow_status not in valid_statuses:
+        if not for_preview and episode.workflow_status not in valid_statuses:
             raise ValueError(
                 f"Episode 状态不允许: {WorkflowStatus(episode.workflow_status).label}"
             )

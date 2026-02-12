@@ -6,6 +6,19 @@
 
 ## 2026-02-12
 
+### Feat - 强制重新切分 (--force-resegment)
+
+**问题:** preview 脚本与 workflow 章节划分不一致，因 workflow 在 episode 已分章时跳过 AI 调用，仅显示库中旧章节。
+
+**修改文件:**
+- `backend/app/workflows/runner.py` - run_workflow 新增 force_resegment，支持清除旧章节并回退到 PROOFREAD 后重新切分
+- `backend/scripts/run.py` - 新增 --force-resegment 参数，修正 get_session 使用 with 上下文
+- `backend/scripts/test_complete_workflow.py` - 新增 --force-resegment，修复 --test-db 切换数据库失效（改用 db_module._session_factory）
+
+**用法:** `python scripts/run.py <URL> --force-resegment`
+
+---
+
 ### Fix - 营销文案兜底改用章节小结
 
 **问题:** 兜底逻辑使用 `episode.ai_summary`，但该字段在数据库中常为空；日志显示 AI 已生成内容，但 Obsidian 文件仍为 fallback。

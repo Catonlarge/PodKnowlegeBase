@@ -12,10 +12,9 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.panel import Panel
 from rich.table import Table
-from openai import OpenAI
 
 from app.enums.workflow_status import WorkflowStatus
-from app.models import Episode
+from app.models import Episode, Chapter, TranscriptCue, AudioSegment
 from app.workflows.state_machine import (
     WorkflowStateMachine,
     WorkflowInfo,
@@ -27,7 +26,6 @@ from app.services.subtitle_proofreading_service import SubtitleProofreadingServi
 from app.services.segmentation_service import SegmentationService
 from app.services.translation_service import TranslationService
 from app.services.obsidian_service import ObsidianService
-from app.config import MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL
 
 
 def calculate_url_hash(url: str) -> str:
@@ -41,14 +39,6 @@ def calculate_url_hash(url: str) -> str:
         MD5 hash hex string
     """
     return hashlib.md5(url.encode()).hexdigest()
-
-
-def get_llm_client():
-    """Get LLM client for AI services."""
-    return OpenAI(
-        api_key=MOONSHOT_API_KEY,
-        base_url=MOONSHOT_BASE_URL
-    )
 
 
 def create_or_get_episode(db: Session, url: str, force_restart: bool = False) -> Episode:
@@ -114,19 +104,37 @@ class WorkflowRunner:
         self.console = console or Console()
         self.state_machine = WorkflowStateMachine(db)
 
-    def run_workflow(self, url: str, force_restart: bool = False) -> Episode:
+    def run_workflow(self, url: str, force_restart: bool = False, force_resegment: bool = False) -> Episode:
         """
         Execute the complete workflow from URL to document.
 
         Args:
             url: YouTube URL
             force_restart: Force restart from beginning
+            force_resegment: Force re-segment (clear old chapters and re-run AI)
 
         Returns:
             Processed Episode object
         """
         # Get or create episode
         episode = create_or_get_episode(self.db, url, force_restart)
+
+        # Force re-segment: clear old chapters and reset to PROOFREAD
+        if force_resegment and episode.workflow_status >= WorkflowStatus.SEGMENTED.value:
+            cues = (
+                self.db.query(TranscriptCue)
+                .join(AudioSegment, AudioSegment.id == TranscriptCue.segment_id)
+                .filter(AudioSegment.episode_id == episode.id)
+            ).all()
+            for cue in cues:
+                cue.chapter_id = None
+            self.db.query(Chapter).filter(Chapter.episode_id == episode.id).delete(
+                synchronize_session=False
+            )
+            episode.workflow_status = WorkflowStatus.PROOFREAD.value
+            self.db.commit()
+            self.db.refresh(episode)
+            self.console.print("[yellow]已清除旧章节，将强制重新切分[/yellow]")
 
         # Check if can resume
         can_resume, message = self.state_machine.can_resume(episode)
@@ -266,8 +274,7 @@ def proofread_episode(episode: Episode, db: Session) -> Episode:
     Returns:
         Updated Episode with PROOFREAD status
     """
-    llm_client = get_llm_client()
-    service = SubtitleProofreadingService(db, llm_service=llm_client)
+    service = SubtitleProofreadingService(db, provider="moonshot")
     service.scan_and_correct(episode.id, apply=True)
 
     episode.workflow_status = WorkflowStatus.PROOFREAD
@@ -287,8 +294,7 @@ def segment_episode(episode: Episode, db: Session) -> Episode:
     Returns:
         Updated Episode with SEGMENTED status
     """
-    llm_client = get_llm_client()
-    service = SegmentationService(db, llm_service=llm_client)
+    service = SegmentationService(db, provider="moonshot")
     service.analyze_and_segment(episode.id)
 
     episode.workflow_status = WorkflowStatus.SEGMENTED
@@ -308,8 +314,7 @@ def translate_episode(episode: Episode, db: Session) -> Episode:
     Returns:
         Updated Episode with TRANSLATED status
     """
-    llm_client = get_llm_client()
-    service = TranslationService(db, llm_service=llm_client)
+    service = TranslationService(db, provider="moonshot")
     service.batch_translate(episode.id, language_code="zh")
 
     episode.workflow_status = WorkflowStatus.TRANSLATED
