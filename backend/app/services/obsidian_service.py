@@ -539,9 +539,13 @@ class ObsidianService:
                 section_summary = f"> **章节摘要：** {chapter.summary}\n\n"
 
             # 章节字幕表格
-            # 获取该章节的所有 TranscriptCue
-            cues = self.db.query(TranscriptCue).filter(
-                TranscriptCue.chapter_id == chapter.id
+            # 使用时间范围查询获取该章节的所有 TranscriptCue（与Notion保持一致）
+            cues = self.db.query(TranscriptCue).join(
+                AudioSegment, TranscriptCue.segment_id == AudioSegment.id
+            ).filter(
+                AudioSegment.episode_id == episode.id,
+                TranscriptCue.start_time >= chapter.start_time,
+                TranscriptCue.start_time < chapter.end_time
             ).order_by(TranscriptCue.start_time).all()
 
             section_table = self._render_bilingual_table(cues, language_code)
@@ -593,6 +597,9 @@ class ObsidianService:
 
         for i, cue in enumerate(cues):
             translation = cue.get_translation(language_code)
+            # 移除[用户修改]前缀（内部标记，不显示给用户）
+            if translation and translation.startswith("[用户修改] "):
+                translation = translation[len("[用户修改] "):]
             translation_text = translation if translation else "[未翻译]"
 
             # 说话人切换时
@@ -611,7 +618,9 @@ class ObsidianService:
                     lines.append("")
 
             # 添加英文字幕行（锚点 + 英文）
-            lines.append(f"{cue.obsidian_anchor} {cue.text}")
+            # 使用 effective_text（校对后的文本或原文）
+            text_content = cue.effective_text if hasattr(cue, 'effective_text') else cue.text
+            lines.append(f"{cue.obsidian_anchor} {text_content}")
             # 英文后空一行（中英分隔）
             lines.append("")
             # 添加中文翻译

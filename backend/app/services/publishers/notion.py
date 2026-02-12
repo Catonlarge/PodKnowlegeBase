@@ -464,11 +464,11 @@ class NotionPublisher:
         language_code: str = "zh"
     ) -> List[Dict[str, Any]]:
         """
-        渲染中英对照字幕（按 speaker 分组）
+        渲染中英对照字幕（按原始顺序，说话人切换时添加 header）
 
         格式：
-        - Speaker 标题（callout）
-        - 该 speaker 的所有字幕（每个 callout 包含时间戳+英文+中文）
+        - Speaker 标题（callout）- 说话人切换时添加
+        - 字幕（每个 callout 包含时间戳+英文+中文）
 
         Args:
             cues: TranscriptCue 列表
@@ -481,78 +481,75 @@ class NotionPublisher:
             return []
 
         blocks = []
+        current_speaker = None
 
-        # 按 speaker 分组
-        from collections import defaultdict
-        speaker_cues = defaultdict(list)
-        for cue in cues:
-            # 使用 effective_text（如果已校对，使用校对后的文本）
-            speaker_cues[cue.speaker].append(cue)
-
-        # 为每个 speaker 创建内容
-        for speaker, speaker_cue_list in speaker_cues.items():
-            # Speaker 标题 callout
-            speaker_display = self._format_speaker_name(speaker)
-            blocks.append({
-                "type": "callout",
-                "callout": {
-                    "rich_text": [
-                        {
-                            "type": "text",
-                            "text": {
-                                "content": speaker_display
-                            },
-                            "annotations": {
-                                "bold": True
-                            }
-                        }
-                    ],
-                    "color": "blue_background"
-                }
-            })
-
-            # 该 speaker 的所有字幕
-            for cue in speaker_cue_list:
-                # 格式化时间
-                minutes = int(cue.start_time // 60)
-                seconds = int(cue.start_time % 60)
-                time_str = f"{minutes:02d}:{seconds:02d}"
-
-                # 获取翻译
-                translation = cue.get_translation(language_code) if hasattr(cue, 'get_translation') else None
-                translation_text = translation if translation else ""
-
-                # 使用 effective_text（校对后的文本或原文）
-                text_content = cue.effective_text if hasattr(cue, 'effective_text') else cue.text
-
-                # 构建 rich_text 数组，时间戳加粗
-                cue_rich_text = [
-                    {
-                        "type": "text",
-                        "text": {"content": time_str},
-                        "annotations": {"bold": True}
-                    },
-                    {
-                        "type": "text",
-                        "text": {"content": f" {text_content}"}
-                    }
-                ]
-
-                # 添加翻译
-                if translation_text:
-                    cue_rich_text.append({
-                        "type": "text",
-                        "text": {"content": f"\n\n{translation_text}"}
-                    })
-
-                # 创建字幕 callout block
+        # 按原始顺序遍历 cues，说话人切换时添加 speaker header
+        for i, cue in enumerate(cues):
+            # 说话人切换时添加 header
+            if cue.speaker != current_speaker:
+                speaker_display = self._format_speaker_name(cue.speaker)
                 blocks.append({
                     "type": "callout",
                     "callout": {
-                        "rich_text": cue_rich_text,
-                        "color": "gray_background"
+                        "rich_text": [
+                            {
+                                "type": "text",
+                                "text": {
+                                    "content": speaker_display
+                                },
+                                "annotations": {
+                                    "bold": True
+                                }
+                            }
+                        ],
+                        "color": "blue_background"
                     }
                 })
+                current_speaker = cue.speaker
+
+            # 格式化时间
+            minutes = int(cue.start_time // 60)
+            seconds = int(cue.start_time % 60)
+            time_str = f"{minutes:02d}:{seconds:02d}"
+
+            # 获取翻译
+            translation = cue.get_translation(language_code) if hasattr(cue, 'get_translation') else None
+            # 移除[用户修改]前缀（内部标记，不显示给用户）
+            if translation and translation.startswith("[用户修改] "):
+                translation = translation[len("[用户修改] "):]
+            translation_text = translation if translation else ""
+
+            # 使用 effective_text（校对后的文本或原文）
+            text_content = cue.effective_text if hasattr(cue, 'effective_text') else cue.text
+
+            # 构建 rich_text 数组，时间戳加粗
+            cue_rich_text = [
+                {
+                    "type": "text",
+                    "text": {"content": time_str},
+                    "annotations": {"bold": True}
+                },
+                {
+                    "type": "text",
+                    "text": {"content": f" {text_content}"}
+                }
+            ]
+
+            # 添加翻译
+            if translation_text:
+                cue_rich_text.append({
+                    "type": "text",
+                    "text": {"content": f"\n\n{translation_text}"}
+                })
+
+            # 创建字幕 callout block
+            blocks.append({
+                "type": "callout",
+                "callout": {
+                    "rich_text": cue_rich_text,
+                    "color": "gray_background"
+                }
+            })
 
         return blocks
 
