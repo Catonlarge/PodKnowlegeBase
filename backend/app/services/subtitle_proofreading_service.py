@@ -18,7 +18,8 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.models import Episode, TranscriptCue, TranscriptCorrection, AudioSegment
 from app.config import (
     MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL,
-    AI_QUERY_TIMEOUT
+    AI_QUERY_TIMEOUT,
+    AI_TEMPERATURE_PROOFREADING
 )
 from app.services.ai.structured_llm import StructuredLLM
 from app.services.ai.schemas.proofreading_schema import ProofreadingResponse
@@ -110,7 +111,8 @@ class SubtitleProofreadingService:
                 provider=provider,
                 model=model,
                 api_key=api_key,
-                base_url=base_url
+                base_url=base_url,
+                temperature=AI_TEMPERATURE_PROOFREADING
             )
             logger.info(f"SubtitleProofreadingService: Initialized {provider} StructuredLLM")
         except Exception as e:

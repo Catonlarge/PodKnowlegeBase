@@ -24,6 +24,7 @@ from app.models import Episode, MarketingPost, TranscriptCue, AudioSegment, Chap
 from app.config import (
     get_marketing_llm_config,
     AI_QUERY_TIMEOUT,
+    AI_TEMPERATURE_MARKETING,
     MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL,
     ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL,
     GEMINI_API_KEY, GEMINI_MODEL
@@ -87,7 +88,8 @@ class MarketingService:
                 provider=provider,
                 model=llm_config["model"],
                 api_key=api_key,
-                base_url=llm_config["base_url"]
+                base_url=llm_config["base_url"],
+                temperature=AI_TEMPERATURE_MARKETING
             )
             logger.info(f"MarketingService: Initialized {provider} StructuredLLM")
         except Exception as e:
@@ -241,7 +243,7 @@ class MarketingService:
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
                         ],
-                        temperature=0.8,
+                        temperature=AI_TEMPERATURE_MARKETING,
                     )
                     return completion.choices[0].message.content
 
@@ -345,7 +347,7 @@ class MarketingService:
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
                         ],
-                        temperature=0.7,
+                        temperature=AI_TEMPERATURE_MARKETING,
                     )
                     return completion.choices[0].message.content
 
@@ -788,7 +790,7 @@ class MarketingService:
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt}
                         ],
-                        temperature=0.8,
+                        temperature=AI_TEMPERATURE_MARKETING,
                     )
                     return completion.choices[0].message.content
 

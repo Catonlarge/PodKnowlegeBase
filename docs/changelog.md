@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-02-12
+
+### Feat - 按场景配置 Temperature
+
+**修改文件:**
+- `backend/config.yaml` - 新增 `ai.temperature` 配置块
+- `backend/app/config.py` - 新增 4 个 temperature 常量
+- `backend/app/services/segmentation_service.py` - 传入 `AI_TEMPERATURE_SEGMENTATION`
+- `backend/app/services/subtitle_proofreading_service.py` - 传入 `AI_TEMPERATURE_PROOFREADING`
+- `backend/app/services/translation_service.py` - 用 `AI_TEMPERATURE_TRANSLATION` 替代硬编码 0.3
+- `backend/app/services/marketing_service.py` - 用 `AI_TEMPERATURE_MARKETING` 替代硬编码 0.7/0.8
+
+**参考:** `docs/phase-planning/temperature-config-code-review.md`
+
+**配置说明:**
+- `segmentation: 0` - 章节划分需确定性
+- `proofreading: 0` - 字幕校对需准确
+- `translation: 0.3` - PRD 已规定
+- `marketing: 0.8` - 营销文案需一定创意
+
+---
+
 ## 2026-02-08
 
 ### Fixed - TranslationService 边界情况修复

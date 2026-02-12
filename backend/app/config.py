@@ -140,6 +140,13 @@ USE_AI_MOCK = get_config("ai.use_mock", False)
 # Modify in config.yaml to switch provider
 MARKETING_LLM_PROVIDER = get_config("ai.marketing.provider", "zhipu")
 
+# ==================== Temperature per Scenario ====================
+# 0 = deterministic, 1 = creative
+AI_TEMPERATURE_SEGMENTATION = get_config("ai.temperature.segmentation", 0)
+AI_TEMPERATURE_PROOFREADING = get_config("ai.temperature.proofreading", 0)
+AI_TEMPERATURE_TRANSLATION = get_config("ai.temperature.translation", 0.3)
+AI_TEMPERATURE_MARKETING = get_config("ai.temperature.marketing", 0.8)
+
 # ==================== Audio Processing Configuration ====================
 
 # Whisper Settings

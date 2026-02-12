@@ -28,7 +28,8 @@ from app.config import (
     MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL,
     ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL,
     GEMINI_API_KEY, GEMINI_MODEL,
-    MOONSHOT_TIMEOUT, ZHIPU_TIMEOUT, GEMINI_TIMEOUT
+    MOONSHOT_TIMEOUT, ZHIPU_TIMEOUT, GEMINI_TIMEOUT,
+    AI_TEMPERATURE_TRANSLATION
 )
 from app.services.ai.structured_llm import StructuredLLM
 from app.services.ai.schemas.translation_schema import TranslationResponse
@@ -145,7 +146,8 @@ class TranslationService:
                 model=model,
                 api_key=api_key,
                 base_url=base_url,
-                timeout=timeout
+                timeout=timeout,
+                temperature=AI_TEMPERATURE_TRANSLATION
             )
             logger.info(f"TranslationService: Initialized {provider} StructuredLLM")
         except Exception as e:
@@ -653,7 +655,7 @@ class TranslationService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
+                temperature=AI_TEMPERATURE_TRANSLATION,
             )
 
             # 边界处理: 检查 content 是否为 None

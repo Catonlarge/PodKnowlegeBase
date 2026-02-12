@@ -7,7 +7,7 @@ Migrated to use StructuredLLM with Pydantic validation and retry logic.
 """
 import logging
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -16,7 +16,8 @@ from app.models import Episode, Chapter, TranscriptCue, AudioSegment
 from app.enums.workflow_status import WorkflowStatus
 from app.config import (
     MOONSHOT_API_KEY, MOONSHOT_BASE_URL, MOONSHOT_MODEL,
-    ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL
+    ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL,
+    AI_TEMPERATURE_SEGMENTATION
 )
 from app.services.ai.structured_llm import StructuredLLM
 from app.services.ai.schemas.segmentation_schema import SegmentationResponse
@@ -24,15 +25,16 @@ from app.services.ai.validators.segmentation_validator import SegmentationValida
 
 logger = logging.getLogger(__name__)
 
+# 兜底策略常量（折中：优先完整，仅在 API 失败时重试采样，且采样粒度温和）
+FALLBACK_MAX_CUES = 500   # 采样兜底时 500 条（75 分钟约 9 秒/条，保留更多语义）
 
 # Prompt 模板
-SEGMENTATION_PROMPT = """
+SEGMENTATION_PROMPT_FULL = """
 你是一个专业的音频内容分析师。请分析以下英文转录文本，进行**自适应语义章节划分**。
 
 **输入：**
-- 英文 Transcript 采样（含时间戳，均匀分布）
+- 英文 Transcript（完整内容，含时间戳）
 - 总时长：{duration} 分钟（{duration_seconds} 秒）
-- 采样说明：以下是从完整内容中均匀采样的代表性片段
 
 **核心原则（强制执行）：**
 1. **拒绝机械式切分**：章节划分必须依据内容的语义结构，而非时间区间
@@ -44,16 +46,13 @@ SEGMENTATION_PROMPT = """
 4. **宁少勿多**：如果内容是一个连贯的对话，**可以不划分**（保留为单一章节）
 
 **任务：**
-1. 分析采样内容的语义转折点和话题变化
-2. **根据采样内容推断完整内容的章节划分**
-3. 章节的 start_time 和 end_time **必须使用秒作为单位**，基于总秒数（{duration_seconds}秒）进行合理分配
-4. 直接输出**中文**的章节标题和摘要
+1. 分析完整内容的语义转折点和话题变化，划分章节
+2. 章节的 start_time 和 end_time **必须使用秒作为单位**，基于总秒数（{duration_seconds}秒）进行合理分配
+3. 直接输出**中文**的章节标题和摘要
 
 **切分决策示例：**
-- ❌ 错误：75分钟内容只划分前面2分钟 → 时间范围错误
-- ✅ 正确：75分钟内容（4500秒）划分成覆盖完整时长的章节 → 符合实际时长
-- ❌ 错误：5分钟内容切分成3个以上章节 → 违反"最多2章"规则
-- ✅ 正确：5分钟内容切分成1-2个章节 → 符合规则
+- 错误：75分钟内容只划分前面2分钟；5分钟内容切分成3个以上章节
+- 正确：75分钟内容（4500秒）划分成覆盖完整时长的章节；5分钟内容切分成1-2个章节
 
 **当前内容判定：**
 - 总时长：{duration} 分钟（{duration_seconds} 秒）
@@ -73,7 +72,39 @@ SEGMENTATION_PROMPT = """
   ]
 }}
 ```
-**注意：start_time 和 end_time 必须是秒数**，例如：75分钟的内容应输出 0-4500 秒的范围。
+**注意：start_time 和 end_time 必须是秒数**。
+
+**Transcript:**
+{transcript}
+"""
+
+SEGMENTATION_PROMPT_SAMPLED = """
+你是一个专业的音频内容分析师。请分析以下英文转录文本，进行**自适应语义章节划分**。
+
+**输入：**
+- 英文 Transcript（基于时间的均匀采样，含时间戳）
+- 总时长：{duration} 分钟（{duration_seconds} 秒）
+- 采样说明：以下是从完整内容中均匀采样的代表性片段，请根据采样推断完整内容的章节划分
+
+**核心原则（强制执行）：**
+1. **拒绝机械式切分**：章节划分必须依据内容的语义结构，而非时间区间
+2. **保持语义完整**：每个章节应该是一个完整的语义单元
+3. **章节数量上限**：短内容最多2章，中等最多4章，长内容最多6章
+4. **宁少勿多**：如果内容连贯，可以不划分
+
+**任务：**
+1. 分析采样内容的语义转折点，**推断**完整内容的章节划分
+2. start_time 和 end_time 使用秒，覆盖 [0, {duration_seconds}秒]
+3. 直接输出**中文**的章节标题和摘要
+
+**当前内容判定：**
+- 总时长：{duration} 分钟（{duration_seconds} 秒）
+- 最大章节数：{max_chapters} 个
+
+**输出格式（JSON）：**
+```json
+{{"chapters": [{{"title": "...", "summary": "...", "start_time": 0.0, "end_time": 720.5}}]}}
+```
 
 **Transcript (采样):**
 {transcript}
@@ -136,7 +167,8 @@ class SegmentationService:
                 provider=provider,
                 model=model,
                 api_key=api_key,
-                base_url=base_url
+                base_url=base_url,
+                temperature=AI_TEMPERATURE_SEGMENTATION
             )
             logger.info(f"SegmentationService: Initialized {provider} StructuredLLM")
         except Exception as e:
@@ -190,13 +222,12 @@ class SegmentationService:
         if not cues:
             raise ValueError(f"Episode 没有转录内容: episode_id={episode_id}")
 
-        # 构建 Transcript 文本
-        transcript_text = self._build_transcript_text(cues)
+        # 构建 Transcript 文本（优先不采样）
+        transcript_text, use_sampling = self._build_transcript_text(cues)
+        if use_sampling:
+            logger.info(f"内容过长，使用采样兜底: {len(cues)} 条 -> 采样后发送")
 
-        # 调用 AI 分析
         duration_minutes = episode.duration / 60
-
-        # 计算最大章节数（根据PRD要求）
         if duration_minutes < 8:
             max_chapters = 2
         elif duration_minutes < 20:
@@ -204,24 +235,23 @@ class SegmentationService:
         else:
             max_chapters = 6
 
-        prompt = SEGMENTATION_PROMPT.format(
+        prompt_template = SEGMENTATION_PROMPT_SAMPLED if use_sampling else SEGMENTATION_PROMPT_FULL
+        prompt = prompt_template.format(
             duration=f"{duration_minutes:.1f}",
             duration_seconds=f"{episode.duration:.0f}",
             max_chapters=max_chapters,
             transcript=transcript_text
         )
 
-        logger.info(f"开始章节切分: episode_id={episode_id}, cues数量={len(cues)}")
+        logger.info(f"开始章节切分: episode_id={episode_id}, cues={len(cues)}, 模式={'采样' if use_sampling else '完整'}")
 
-        # 调用 StructuredLLM 进行章节切分（带兜底）
-        try:
-            response: SegmentationResponse = self._call_ai_for_segmentation(prompt, total_duration=episode.duration)
-            # 业务验证
-            response = SegmentationValidator.validate(response, total_duration=episode.duration)
-        except Exception as e:
-            logger.warning(f"AI 章节切分失败: {e}，使用兜底方案（单章节）")
-            # 兜底：创建单个章节覆盖全部内容
-            response = self._create_fallback_response(episode)
+        # 调用 AI（优先完整模式，失败时重试采样模式）
+        response = self._call_ai_with_fallback(
+            prompt=prompt,
+            cues=cues,
+            episode=episode,
+            use_sampling=use_sampling
+        )
 
         # 创建 Chapter 记录
         chapters = self._create_chapters(episode_id, response)
@@ -236,62 +266,171 @@ class SegmentationService:
 
         return chapters
 
-    def _build_transcript_text(
+    def preview_segmentation(self, episode_id: int) -> List[Dict]:
+        """
+        预览章节切分结果（不写入数据库，仅调用 AI 返回结果）
+
+        用于审核：输出 MD 文档供人工核对章节标题与内容对应关系。
+
+        Args:
+            episode_id: Episode ID
+
+        Returns:
+            List[Dict]: 章节列表，每项含 title, summary, start_time, end_time
+        """
+        episode = self.db.query(Episode).filter(Episode.id == episode_id).first()
+        if not episode:
+            raise ValueError(f"Episode 不存在: episode_id={episode_id}")
+
+        valid_statuses = [
+            WorkflowStatus.TRANSCRIBED.value,
+            WorkflowStatus.PROOFREAD.value,
+            WorkflowStatus.SEGMENTED.value,  # 已分章也可预览（用于重新生成）
+        ]
+        if episode.workflow_status not in valid_statuses:
+            raise ValueError(
+                f"Episode 状态不允许: {WorkflowStatus(episode.workflow_status).label}"
+            )
+
+        cues = (
+            self.db.query(TranscriptCue)
+            .join(AudioSegment, AudioSegment.id == TranscriptCue.segment_id)
+            .filter(AudioSegment.episode_id == episode_id)
+            .order_by(TranscriptCue.start_time)
+            .all()
+        )
+        if not cues:
+            raise ValueError(f"Episode 没有转录内容: episode_id={episode_id}")
+
+        transcript_text, use_sampling = self._build_transcript_text(cues)
+        duration_minutes = episode.duration / 60
+        max_chapters = 6 if duration_minutes >= 20 else (4 if duration_minutes >= 8 else 2)
+        prompt_template = SEGMENTATION_PROMPT_SAMPLED if use_sampling else SEGMENTATION_PROMPT_FULL
+        prompt = prompt_template.format(
+            duration=f"{duration_minutes:.1f}",
+            duration_seconds=f"{episode.duration:.0f}",
+            max_chapters=max_chapters,
+            transcript=transcript_text
+        )
+
+        response = self._call_ai_with_fallback(
+            prompt=prompt,
+            cues=cues,
+            episode=episode,
+            use_sampling=use_sampling
+        )
+
+        return [
+            {
+                "title": ch.title,
+                "summary": ch.summary,
+                "start_time": ch.start_time,
+                "end_time": ch.end_time,
+            }
+            for ch in response.chapters
+        ]
+
+    def _sample_cues_by_time(
         self,
         cues: List[TranscriptCue],
-        max_cues: int = 150
-    ) -> str:
+        max_cues: int = FALLBACK_MAX_CUES
+    ) -> List[TranscriptCue]:
+        """基于时间的均匀采样"""
+        if len(cues) <= max_cues:
+            return cues
+        total_duration = cues[-1].start_time
+        sample_interval = total_duration / max_cues
+        sampled_cues = []
+        last_sampled_time = -1
+        for cue in cues:
+            if cue.start_time - last_sampled_time >= sample_interval:
+                sampled_cues.append(cue)
+                last_sampled_time = cue.start_time
+                if len(sampled_cues) >= max_cues:
+                    break
+        if sampled_cues and sampled_cues[-1].id != cues[-1].id:
+            sampled_cues.append(cues[-1])
+        logger.info(
+            f"采样兜底: 原始 {len(cues)} 条 -> {len(sampled_cues)} 条, "
+            f"时间 {sampled_cues[0].start_time:.0f}s - {sampled_cues[-1].start_time:.0f}s"
+        )
+        return sampled_cues
+
+    def _build_transcript_text(
+        self,
+        cues: List[TranscriptCue]
+    ) -> tuple[str, bool]:
         """
         构建 Transcript 文本（含时间戳）
 
-        对于长内容，使用**基于时间的均匀采样策略**：
-        - 确保采样的内容覆盖完整的时间范围
-        - 从开头到结尾均匀分布采样点
+        策略：始终传全量内容，不主动采样。采样仅在 API 失败时由 _call_ai_with_fallback 重试使用。
 
         Args:
             cues: TranscriptCue 列表
-            max_cues: 最大处理的 cue 数量（默认150）
 
         Returns:
-            str: 格式化的 Transcript 文本
+            Tuple[str, bool]: (格式化文本, 是否使用了采样)，此处恒为 (text, False)
         """
-        if len(cues) <= max_cues:
-            # 短内容：全部处理
-            sampled_cues = cues
-        else:
-            # 长内容：基于时间均匀采样
-            # 计算总时长
-            total_duration = cues[-1].start_time
-            # 计算目标采样间隔（秒）
-            sample_interval = total_duration / max_cues
-
-            sampled_cues = []
-            last_sampled_time = -1
-
-            for cue in cues:
-                # 每隔 sample_interval 采样一条
-                if cue.start_time - last_sampled_time >= sample_interval:
-                    sampled_cues.append(cue)
-                    last_sampled_time = cue.start_time
-
-                    if len(sampled_cues) >= max_cues:
-                        break
-
-            # 确保最后一条被包含
-            if sampled_cues and sampled_cues[-1].id != cues[-1].id:
-                sampled_cues.append(cues[-1])
-
-            logger.info(f"基于时间均匀采样: 原始 {len(cues)} 条 -> 采样后 {len(sampled_cues)} 条")
-            logger.info(f"时间覆盖: {sampled_cues[0].start_time:.0f}s - {sampled_cues[-1].start_time:.0f}s")
-
-        # 构建文本
         lines = []
-        for cue in sampled_cues:
+        for cue in cues:
             minutes = int(cue.start_time // 60)
             seconds = int(cue.start_time % 60)
             time_str = f"[{minutes:02d}:{seconds:02d}]"
             lines.append(f"{time_str} {cue.speaker}: {cue.text}")
-        return "\n".join(lines)
+        return "\n".join(lines), False
+
+    def _call_ai_with_fallback(
+        self,
+        prompt: str,
+        cues: List[TranscriptCue],
+        episode: Episode,
+        use_sampling: bool
+    ) -> SegmentationResponse:
+        """
+        调用 AI 进行章节切分，带重试兜底。
+
+        策略：完整模式失败时，重试采样模式；再失败则单章节兜底。
+        """
+        try:
+            response = self._call_ai_for_segmentation(prompt, total_duration=episode.duration)
+            return SegmentationValidator.validate(response, total_duration=episode.duration)
+        except Exception as e:
+            error_str = str(e).lower()
+            # 判断是否为「内容过长」类错误（context_length 等）
+            is_context_error = (
+                "context" in error_str
+                or "token" in error_str
+                or "length" in error_str
+                or "max_tokens" in error_str
+                or "rate" in error_str
+                or "timeout" in error_str
+            )
+
+            if not use_sampling and is_context_error:
+                logger.warning(f"完整模式失败 ({e})，重试采样模式")
+                sampled_cues = self._sample_cues_by_time(cues, FALLBACK_MAX_CUES)
+                lines = []
+                for cue in sampled_cues:
+                    minutes = int(cue.start_time // 60)
+                    seconds = int(cue.start_time % 60)
+                    lines.append(f"[{minutes:02d}:{seconds:02d}] {cue.speaker}: {cue.text}")
+                transcript_text = "\n".join(lines)
+                duration_minutes = episode.duration / 60
+                max_chapters = 6 if duration_minutes >= 20 else (4 if duration_minutes >= 8 else 2)
+                retry_prompt = SEGMENTATION_PROMPT_SAMPLED.format(
+                    duration=f"{duration_minutes:.1f}",
+                    duration_seconds=f"{episode.duration:.0f}",
+                    max_chapters=max_chapters,
+                    transcript=transcript_text
+                )
+                try:
+                    response = self._call_ai_for_segmentation(retry_prompt, total_duration=episode.duration)
+                    return SegmentationValidator.validate(response, total_duration=episode.duration)
+                except Exception as retry_e:
+                    logger.warning(f"采样模式也失败: {retry_e}")
+
+            logger.warning(f"AI 章节切分失败: {e}，使用兜底方案（单章节）")
+            return self._create_fallback_response(episode)
 
     def _parse_ai_response(
         self,
