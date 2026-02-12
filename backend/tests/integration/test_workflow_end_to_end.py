@@ -63,7 +63,7 @@ def test_console():
 @pytest.fixture(scope="function")
 def sample_episode(test_db):
     """
-    Create a sample episode with READY_FOR_REVIEW status.
+    Create a sample episode with APPROVED status.
 
     Args:
         test_db: Test database session
@@ -78,7 +78,7 @@ def sample_episode(test_db):
         file_hash="abc123",
         source_url="https://example.com/video",
         duration=120.5,
-        workflow_status=WorkflowStatus.READY_FOR_REVIEW,
+        workflow_status=WorkflowStatus.APPROVED,
         ai_summary="This is a test episode summary."
     )
     test_db.add(episode)
@@ -473,12 +473,12 @@ def test_publisher_full_workflow_mocked(test_db, sample_episode, test_console):
     Behavior: Full publish workflow completes end-to-end with mocked services
 
     Given:
-        - An episode with READY_FOR_REVIEW status
+        - An episode with APPROVED status
         - All external services mocked
     When:
         - Running publish_workflow
     Then:
-        - Should complete all three steps
+        - Should complete all two steps (marketing + distribution)
         - Should update episode status to PUBLISHED
         - Should return updated episode
     """

@@ -12,6 +12,21 @@ You are a Senior Backend Engineer working on **"EnglishPod3 Enhanced"**, a Local
 
 ---
 
+# 脚本使用规则
+1. 别瞎创建，尽力利用已有的脚本；
+
+# 虚拟环境
+1. 虚拟环境的路径在D:\programming_enviroment\EnglishPod-knowledgeBase\backend\venv-kb
+
+# 运行任务规则
+1. 保持过程透明，每隔1min跟我汇报进度，3min还没有进度的时候，杀死进程
+
+# 数据库使用原则
+1. 数据多进程容易死锁，在写入数据库之前检查是否有进程占用
+
+
+
+
 # 1. 核心架构
 
 ```
