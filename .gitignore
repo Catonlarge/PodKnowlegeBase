@@ -18,6 +18,7 @@ ENV/
 # ==================== Logs ====================
 logs/
 *.log
+**/delete_episode_log.txt
 
 # ==================== AI Model Cache ====================
 data/transcript/
