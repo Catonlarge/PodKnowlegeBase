@@ -37,6 +37,11 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
+# Force UTF-8 mode on Windows to avoid subprocess UnicodeDecodeError (gbk) in WhisperX/pyannote
+if sys.platform == "win32" and os.environ.get("PYTHONUTF8") != "1":
+    os.environ["PYTHONUTF8"] = "1"
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
 # Fix encoding for Windows console
 if sys.platform == "win32":
     import io
