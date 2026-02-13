@@ -14,7 +14,15 @@ from sqlalchemy.orm import Session
 
 from app.models import Episode
 from app.utils.file_utils import calculate_md5_sync, get_audio_duration
-from app.config import AUDIO_STORAGE_PATH
+from app.config import (
+    AUDIO_STORAGE_PATH,
+    DOWNLOAD_COOKIES_FROM_BROWSER,
+    DOWNLOAD_COOKIEFILE,
+    DOWNLOAD_PLAYER_CLIENT,
+    DOWNLOAD_INVIDIOUS_MAX_RETRIES,
+    DOWNLOAD_INVIDIOUS_RETRY_INTERVAL,
+    DOWNLOAD_INVIDIOUS_PREFERRED_INSTANCE,
+)
 from app.enums.workflow_status import WorkflowStatus
 
 logger = logging.getLogger(__name__)
@@ -26,6 +34,19 @@ try:
 except ImportError:
     YOUTUBE_DL_AVAILABLE = False
     logger.warning("yt-dlp not available. Install with: pip install yt-dlp")
+
+# yt-dlp-invidious: auto fallback to Invidious when YouTube blocks "Sign in to confirm you're not a bot"
+# Plugin has no importable module; check via package metadata
+def _check_invidious_plugin() -> bool:
+    try:
+        from importlib.metadata import version
+        version("yt-dlp-invidious")
+        return True
+    except Exception:
+        return False
+
+
+INVIDIOUS_PLUGIN_AVAILABLE = _check_invidious_plugin()
 
 
 class DownloadService:
@@ -52,6 +73,8 @@ class DownloadService:
 
         if not YOUTUBE_DL_AVAILABLE:
             logger.warning("DownloadService initialized but yt-dlp is not available")
+        elif INVIDIOUS_PLUGIN_AVAILABLE:
+            logger.info("[DownloadService] yt-dlp-invidious enabled: auto fallback when YouTube blocks")
 
     def download(
         self,
@@ -198,12 +221,7 @@ class DownloadService:
         }
 
         try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'extract_flat': False,
-            }
-
+            ydl_opts = self._build_ydl_opts(metadata_only=True)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
@@ -217,6 +235,62 @@ class DownloadService:
             logger.error(f"[DownloadService] Failed to extract metadata: {e}")
 
         return metadata
+
+    def _build_ydl_opts(self, metadata_only: bool = False) -> dict:
+        """
+        Build yt-dlp options with cookies and extractor args.
+
+        Per yt-dlp wiki: use cookiefile (exported via extension) for reliability;
+        use player_client=web_embedded,tv to avoid YouTube PO Token requirement.
+        """
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+        }
+        if not metadata_only:
+            ydl_opts.update({
+                'format': 'bestaudio[ext=mp3]/best[ext=mp3]/bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '128',
+                }],
+                'overwrite': True,
+            })
+        # cookiefile takes precedence (more reliable per wiki)
+        if DOWNLOAD_COOKIEFILE:
+            from app.config import BASE_DIR
+            cookiefile_path = Path(DOWNLOAD_COOKIEFILE)
+            if not cookiefile_path.is_absolute():
+                cookiefile_path = (BASE_DIR / cookiefile_path).resolve()
+            if cookiefile_path.exists():
+                ydl_opts['cookiefile'] = str(cookiefile_path)
+                logger.info(f"[DownloadService] Using cookiefile: {cookiefile_path}")
+            else:
+                logger.warning(f"[DownloadService] Cookiefile not found: {cookiefile_path}")
+        elif DOWNLOAD_COOKIES_FROM_BROWSER:
+            ydl_opts['cookiesfrombrowser'] = (DOWNLOAD_COOKIES_FROM_BROWSER.strip().lower(),)
+            logger.info(f"[DownloadService] Using cookies from browser: {DOWNLOAD_COOKIES_FROM_BROWSER}")
+        # extractor_args: youtube player_client + invidious fallback tuning
+        extractor_args = {}
+        if DOWNLOAD_PLAYER_CLIENT:
+            clients = [c.strip() for c in DOWNLOAD_PLAYER_CLIENT.split(',') if c.strip()]
+            if clients:
+                extractor_args['youtube'] = {'player_client': clients}
+        if INVIDIOUS_PLUGIN_AVAILABLE:
+            inv_args = {
+                'max_retries': str(DOWNLOAD_INVIDIOUS_MAX_RETRIES),
+                'retry_interval': str(DOWNLOAD_INVIDIOUS_RETRY_INTERVAL),
+            }
+            if DOWNLOAD_INVIDIOUS_PREFERRED_INSTANCE:
+                inv_args['preferred_instance'] = DOWNLOAD_INVIDIOUS_PREFERRED_INSTANCE
+            extractor_args['invidious'] = inv_args
+            if DOWNLOAD_INVIDIOUS_PREFERRED_INSTANCE:
+                extractor_args['invidiousplaylist'] = {'preferred_instance': DOWNLOAD_INVIDIOUS_PREFERRED_INSTANCE}
+        if extractor_args:
+            ydl_opts['extractor_args'] = extractor_args
+        return ydl_opts
 
     def _download_with_retry(
         self,
@@ -247,20 +321,8 @@ class DownloadService:
 
         for attempt in range(max_retries):
             try:
-                ydl_opts = {
-                    'quiet': True,
-                    'no_warnings': True,
-                    # 音频优先格式：选择最佳音频质量，但限制为音频流
-                    'format': 'bestaudio[ext=mp3]/best[ext=mp3]/bestaudio/best',
-                    # 后处理：转换为 MP3，低比特率（节省空间）
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '128',  # 128kbps 足够用于语音识别
-                    }],
-                    'outtmpl': output_path.rsplit('.', 1)[0],  # Remove extension
-                    'overwrite': True,
-                }
+                ydl_opts = self._build_ydl_opts(metadata_only=False)
+                ydl_opts['outtmpl'] = output_path.rsplit('.', 1)[0]
 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     ydl.download([url])

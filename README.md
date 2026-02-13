@@ -4,7 +4,7 @@
 
 **Local-First AI-Powered English Learning Content Automation Tool**
 
-[PRD](docs/prd.md) • [数据库设计](docs/database-design.md) • [技术栈](docs/技术栈.md) • [项目结构](docs/项目目录设计.md)
+[操作手册](docs/操作手册.md) • [PRD](docs/prd.md) • [数据库设计](docs/database-design.md) • [技术栈](docs/技术栈.md)
 
 </div>
 
@@ -36,12 +36,14 @@ EnglishPod3 Enhanced 是一个**本地优先**的英语学习内容自动化工�
 
 ### 1. 环境配置
 
+**虚拟环境**：`backend/venv-kb`（以下命令均需在激活后执行）
+
 ```powershell
-# 克隆项目
+# 进入 backend 目录
 cd D:\programming_enviroment\EnglishPod-knowledgeBase\backend
 
-# 激活虚拟环境 (PowerShell)
-D:\programming_enviroment\EnglishPod-knowledgeBase\backend\venv-kb\Scripts\Activate.ps1
+# 激活虚拟环境 venv-kb (PowerShell)
+venv-kb\Scripts\Activate.ps1
 
 # 安装依赖（首次运行）
 pip install -r requirements.txt
@@ -93,12 +95,13 @@ ai:
 
 ### 阶段一：生产阶段 (URL → Obsidian 文档)
 
-```bash
-# 激活虚拟环境
-D:\programming_enviroment\EnglishPod-knowledgeBase\backend\venv-kb\Scripts\Activate.ps1
+```powershell
+# 进入 backend 目录并激活 venv-kb
+cd D:\programming_enviroment\EnglishPod-knowledgeBase\backend
+venv-kb\Scripts\Activate.ps1
 
-# 运行主工作流
-python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
+# 运行主工作流（PowerShell 下 URL 含 & 时需用双引号包裹）
+python scripts/run.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
 **终端输出示例：**
@@ -131,17 +134,17 @@ URL: https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
 **断点续传：**
 
-如果任务中断（如网络错误），重新运行相同 URL 会自动从断点恢复：
+如果任务中断（如网络错误），重新运行相同 URL 会自动从断点恢复。以下命令需在 `backend` 目录下执行：
 
-```bash
-# 自动恢复，从头开始
-python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
+```powershell
+# 自动恢复
+python scripts/run.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 # 强制重新开始（忽略断点）
-python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --restart
+python scripts/run.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --restart
 
 # 强制重新切分（清除旧章节并重新调用 AI）
-python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --force-resegment
+python scripts/run.py "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --force-resegment
 ```
 
 **生成的 Obsidian 文档位置：**
@@ -254,21 +257,29 @@ Episode ID: 42
 
 ## CLI 命令详解
 
+以下命令需在 `backend/` 目录下、**已激活 venv-kb** 后执行。
+
 ### run.py - 主工作流
 
 ```powershell
-python scripts/run.py <URL> [--restart] [--force-resegment]
+cd D:\programming_enviroment\EnglishPod-knowledgeBase\backend
+python scripts/run.py "<URL>" [--restart] [--force-resegment]
 ```
 
 | 参数 | 说明 |
 |------|------|
-| `URL` | YouTube 视频 URL（必需） |
+| `URL` | YouTube 视频 URL（必需）。PowerShell 下若 URL 含 `&`（如 `&t=14s`）需用双引号包裹 |
 | `--restart` | 强制重新开始，忽略断点续传（可选） |
 | `--force-resegment` | 强制重新切分，清除旧章节并重新调用 AI（可选） |
+| `--cookies-from-browser` | 使用浏览器 Cookie（如 `chrome`）（可选，可能因 YouTube 轮换失效） |
+| `--cookies` | 使用 cookies 文件（Netscape 格式，推荐，更可靠） |
 
 ### sync_review_status.py - 同步审核状态
 
+**工作目录**：`backend/`。
+
 ```powershell
+cd D:\programming_enviroment\EnglishPod-knowledgeBase\backend
 python scripts/sync_review_status.py
 ```
 
@@ -276,7 +287,10 @@ python scripts/sync_review_status.py
 
 ### publish.py - 发布工作流
 
+**工作目录**：`backend/`。
+
 ```powershell
+cd D:\programming_enviroment\EnglishPod-knowledgeBase\backend
 python scripts/publish.py --id <EPISODE_ID> [--force-remarketing]
 ```
 
@@ -398,10 +412,47 @@ python scripts/publish.py --id <episode_id>
 
 ### Q: 如何重新处理某个 Episode？
 
-```bash
-# 强制重新开始
-python scripts/run.py <原始_URL> --restart
+```powershell
+# 强制重新开始（URL 含 & 时用双引号包裹）
+python scripts/run.py "<原始_URL>" --restart
 ```
+
+### Q: PowerShell 报错「不允许使用与号(&)」？
+
+URL 中含 `&`（如 `&t=14s` 时间戳）时，PowerShell 会将其解析为特殊字符。用双引号包裹整个 URL 即可：`python scripts/run.py "https://...&t=14s"`。
+
+### Q: 报错「No such file or directory」找不到 scripts/run.py？
+
+脚本位于 `backend/scripts/`，需先在 `backend` 目录下执行：
+
+```powershell
+cd D:\programming_enviroment\EnglishPod-knowledgeBase\backend
+python scripts/run.py "https://www.youtube.com/watch?v=xxx&t=14s"
+```
+
+### Q: 下载报错「Sign in to confirm you're not a bot」？
+
+项目已集成 **yt-dlp-invidious** 插件，YouTube 被拦截时会**自动切换**到 Invidious 实例下载，多数情况下无需额外配置。若仍失败，可尝试：
+
+**方式 A：cookies 文件**
+
+1. 安装 Chrome 扩展 [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+2. 打开**无痕窗口**，登录 YouTube，访问 `https://www.youtube.com/robots.txt`（仅此标签）
+3. 用扩展导出 `youtube.com` 的 cookies 到 `backend/data/cookies.txt`
+4. **立即关闭无痕窗口**（否则 cookie 会被轮换失效）
+5. 运行：
+
+```powershell
+python scripts/run.py "https://www.youtube.com/watch?v=xxx" --cookies backend/data/cookies.txt
+```
+
+**方式 B：浏览器 Cookie（可能因轮换失效）**
+
+```powershell
+python scripts/run.py "https://www.youtube.com/watch?v=xxx" --cookies-from-browser chrome
+```
+
+需确保 Chrome 已登录 YouTube。部分用户报告 Firefox 比 Edge 更可靠。
 
 ### Q: Obsidian 文档可以手动编辑吗？
 
@@ -490,6 +541,7 @@ notion:
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
+| **操作手册** | [docs/操作手册.md](docs/操作手册.md) | 日常操作指南 |
 | PRD | [docs/prd.md](docs/prd.md) | 产品需求文档 |
 | 数据库设计 | [docs/database-design.md](docs/database-design.md) | 数据库 Schema |
 | 技术栈 | [docs/技术栈.md](docs/技术栈.md) | 技术选型说明 |

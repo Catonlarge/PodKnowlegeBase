@@ -31,6 +31,7 @@ data/temp_segments/
 .env
 .env.local
 config.yaml
+**/cookies.txt
 
 # ==================== IDE ====================
 .vscode/

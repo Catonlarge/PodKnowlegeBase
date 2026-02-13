@@ -1,4 +1,4 @@
-﻿# ==================== Web Framework ====================
+# ==================== Web Framework ====================
 fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 pydantic>=2.0.0
@@ -17,6 +17,7 @@ psutil>=5.9.0
 
 # ==================== Audio Processing ====================
 yt-dlp>=2023.10.0
+yt-dlp-invidious>=0.1.1  # Auto fallback to Invidious when YouTube blocks with "Sign in to confirm you're not a bot"
 ffmpeg-python>=0.2.0
 
 # ==================== CLI and UI ====================

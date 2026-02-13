@@ -147,6 +147,21 @@ AI_TEMPERATURE_PROOFREADING = get_config("ai.temperature.proofreading", 0)
 AI_TEMPERATURE_TRANSLATION = get_config("ai.temperature.translation", 0.3)
 AI_TEMPERATURE_MARKETING = get_config("ai.temperature.marketing", 0.8)
 
+# ==================== Download Configuration (yt-dlp) ====================
+# Use browser cookies when YouTube blocks with "Sign in to confirm you're not a bot"
+# Override with env YT_DLP_COOKIES_FROM_BROWSER (e.g., chrome, firefox)
+DOWNLOAD_COOKIES_FROM_BROWSER = os.environ.get("YT_DLP_COOKIES_FROM_BROWSER") or get_config(
+    "download.cookies_from_browser", None
+)
+# Cookies file path (Netscape format, exported via browser extension - more reliable)
+DOWNLOAD_COOKIEFILE = os.environ.get("YT_DLP_COOKIEFILE") or get_config("download.cookiefile", None)
+# YouTube player_client: use web_embedded,tv to avoid PO Token requirement
+DOWNLOAD_PLAYER_CLIENT = get_config("download.player_client", "web_embedded,tv")
+# yt-dlp-invidious fallback tuning
+DOWNLOAD_INVIDIOUS_MAX_RETRIES = get_config("download.invidious.max_retries", 5)
+DOWNLOAD_INVIDIOUS_RETRY_INTERVAL = get_config("download.invidious.retry_interval", 5)
+DOWNLOAD_INVIDIOUS_PREFERRED_INSTANCE = get_config("download.invidious.preferred_instance", None)
+
 # ==================== Audio Processing Configuration ====================
 
 # Whisper Settings
