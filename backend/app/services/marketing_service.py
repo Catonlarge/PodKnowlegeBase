@@ -517,7 +517,7 @@ class MarketingService:
             logger.exception(f"AI 调用失败（重试已耗尽）: {e}，使用章节小结兜底")
             return self._generate_fallback_multi_angle_copy(episode, key_quotes)
 
-    @ai_retry(max_retries=2, initial_delay=1.0, retry_on=(ValueError, Exception))
+    @ai_retry(max_retries=3, initial_delay=1.0, retry_on=(ValueError, Exception))
     def _call_llm_for_multi_angle_content(
         self,
         episode: Episode,
@@ -571,9 +571,9 @@ class MarketingService:
 【任务】
 分析字幕内容，定义 3 个不同的内容角度，为每个角度生成：
 1. angle_name: 角度名称（4-8字，简洁明了）
-2. title: 标题（包含emoji，30字以内）
-3. content: 正文内容（300-500字）
-4. hashtags: 标签列表（5个，以#开头）
+2. title: 标题（包含emoji，30字以内，不得超过60字）
+3. content: 正文内容（300-500字，不得超过800字）
+4. hashtags: 标签列表（5个，以#开头，每个标签单独一项）
 
 【正文要求】
 - 开头简洁有力，直接点题

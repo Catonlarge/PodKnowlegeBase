@@ -481,19 +481,29 @@ class CompleteWorkflowTester:
         self.console.print("-" * 60)
 
         try:
-            # 创建营销服务
+            from app.models import MarketingPost
+
             service = MarketingService(self.db)
+            existing_posts = (
+                self.db.query(MarketingPost)
+                .filter(MarketingPost.episode_id == self.episode.id)
+                .order_by(MarketingPost.created_at)
+                .all()
+            )
+
+            if not force_remarketing and existing_posts:
+                self.console.print(f"[yellow]已跳过: 该 Episode 已有 {len(existing_posts)} 条营销文案，不重复调用 LLM[/yellow]")
+                self.console.print(f"  使用 --force-remarketing 可强制重新生成")
+                return self._export_marketing_posts_to_file(existing_posts)
 
             if force_remarketing:
                 deleted = service.delete_marketing_posts_for_episode(self.episode.id)
                 self.console.print(f"[yellow]强制重新生成: 已清除 {deleted} 条旧营销文案[/yellow]")
 
-            # 生成营销文案（3个不同角度）
             self.console.print(f"生成营销文案: {self.episode.title}")
             with self.console.status("[bold green]生成中..."):
                 marketing_copies = service.generate_xiaohongshu_copy_multi_angle(self.episode.id)
 
-            # 保存所有3个角度到数据库
             posts = []
             for i, copy in enumerate(marketing_copies, 1):
                 angle_tag = copy.metadata.get("angle_tag", f"角度{i}")
@@ -507,45 +517,57 @@ class CompleteWorkflowTester:
                 self.console.print(f"[green]角度{i}已保存 (ID: {post.id}): {angle_tag}[/green]")
                 self.console.print(f"  标题: {post.title[:50]}...")
 
-            # 导出为 Markdown 文件（包含所有3个角度）
-            from pathlib import Path
-            from datetime import datetime
-
-            export_dir = Path("D:/programming_enviroment/EnglishPod-knowledgeBase/obsidian/marketing")
-            export_dir.mkdir(parents=True, exist_ok=True)
-
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            file_path = export_dir / f"{timestamp}-marketing-{self.episode.id}.md"
-
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(f"# 营销文案 - {self.episode.title}\n\n")
-                f.write(f"> Episode ID: {self.episode.id}\n")
-                f.write(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"> 状态: 待审核\n\n")
-                f.write("---\n\n")
-
-                # 写入所有角度版本
-                for i, (copy, post) in enumerate(zip(marketing_copies, posts), 1):
-                    angle_tag = copy.metadata.get("angle_tag", f"角度{i}")
-                    f.write(f"## 角度{i}: {angle_tag}\n\n")
-                    f.write(f"**数据库ID**: {post.id}\n\n")
-                    f.write(f"**标题**\n{copy.title}\n\n")
-                    f.write(f"**正文**\n{copy.content}\n\n")
-                    f.write(f"**标签**\n")
-                    f.write(" ".join(copy.hashtags))
-                    f.write("\n\n---\n\n")
-
-            self.console.print(f"[green]营销文案已导出: {file_path}[/green]")
-            self.console.print(f"  大小: {file_path.stat().st_size / 1024:.1f} KB")
-            self.console.print(f"  共 {len(marketing_copies)} 个角度版本")
-
-            return file_path
+            return self._export_marketing_posts_to_file(
+                posts, marketing_copies=marketing_copies
+            )
 
         except Exception as e:
             self.console.print(f"[yellow]营销文案生成失败: {e}[/yellow]")
             import traceback
             self.console.print(traceback.format_exc())
             return None
+
+    def _export_marketing_posts_to_file(
+        self,
+        posts: list,
+        marketing_copies: Optional[list] = None,
+    ) -> Optional[Path]:
+        """导出营销文案到 Markdown 文件。posts 为 MarketingPost 列表；可选 marketing_copies 用于包含 hashtags。"""
+        from pathlib import Path
+        from datetime import datetime
+
+        export_dir = Path("D:/programming_enviroment/EnglishPod-knowledgeBase/obsidian/marketing")
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = export_dir / f"{timestamp}-marketing-{self.episode.id}.md"
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(f"# 营销文案 - {self.episode.title}\n\n")
+            f.write(f"> Episode ID: {self.episode.id}\n")
+            f.write(f"> 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"> 状态: 待审核\n\n")
+            f.write("---\n\n")
+
+            for i, post in enumerate(posts, 1):
+                angle_tag = post.angle_tag
+                f.write(f"## 角度{i}: {angle_tag}\n\n")
+                f.write(f"**数据库ID**: {post.id}\n\n")
+                f.write(f"**标题**\n{post.title}\n\n")
+                f.write(f"**正文**\n{post.content}\n\n")
+                f.write("**标签**\n")
+                if marketing_copies and i <= len(marketing_copies):
+                    copy = marketing_copies[i - 1]
+                    f.write(" ".join(copy.hashtags))
+                else:
+                    f.write("-")
+                f.write("\n\n---\n\n")
+
+        self.console.print(f"[green]营销文案已导出: {file_path}[/green]")
+        self.console.print(f"  大小: {file_path.stat().st_size / 1024:.1f} KB")
+        self.console.print(f"  共 {len(posts)} 个角度版本")
+
+        return file_path
 
     def run_complete_workflow(
         self,
@@ -592,10 +614,10 @@ class CompleteWorkflowTester:
             self.create_episode_from_audio(audio_path)
 
         if only_marketing:
-            self.console.print("[yellow]仅重新生成营销文案[/yellow]")
+            self.console.print("[yellow]仅运行营销文案步骤[/yellow]")
             obsidian_svc = ObsidianService(self.db)
             obsidian_path = obsidian_svc._get_episode_path(self.episode.id)
-            marketing_path = self.generate_marketing_doc(force_remarketing=True)
+            marketing_path = self.generate_marketing_doc(force_remarketing=force_remarketing)
             self._display_summary(obsidian_path, marketing_path, None)
             return self.episode
 
@@ -752,7 +774,7 @@ def main():
     # 必须通过 app.database 模块修改 _session_factory，否则 get_session() 仍用默认库
     if args.test_db:
         import app.database as db_module
-        from sqlalchemy import create_engine
+        from sqlalchemy import create_engine, event
         from sqlalchemy.orm import sessionmaker
         from app.models.base import Base
 
@@ -763,8 +785,12 @@ def main():
         test_engine = create_engine(
             f"sqlite:///{test_db_path}",
             echo=False,
-            connect_args={"check_same_thread": False},
+            connect_args={
+                "check_same_thread": False,
+                "timeout": 30,
+            },
         )
+        event.listen(test_engine, "connect", db_module._set_sqlite_pragma)
         db_module._session_factory = sessionmaker(
             bind=test_engine,
             autocommit=False,

@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-02-13
+
+### Fix - 营销文案断点跳过（已有文案时不重复调用 LLM）
+
+**问题:** 再次运行 test_complete_workflow 时，即使该 Episode 已有营销文案，仍会重新调用 LLM 生成，浪费 token。
+
+**修改:** `backend/scripts/test_complete_workflow.py`
+- `generate_marketing_doc`: 当 `force_remarketing=False` 且该 Episode 已有 `MarketingPost` 时，跳过 LLM 调用，直接导出已有文案到 Markdown
+- `--only-marketing` 路径改为使用 `force_remarketing=force_remarketing`，不再强制重新生成
+
+**用法:**
+```powershell
+# 正常跑全流程：已有营销文案则跳过
+python scripts/test_complete_workflow.py --episode-id 2 --test-db
+
+# 强制重新生成营销文案
+python scripts/test_complete_workflow.py --episode-id 2 --test-db --force-remarketing
+```
+
+---
+
+### Fix - SQLite "database is locked" 错误
+
+**问题:** test_complete_workflow 在章节切分写入 chapters 表时报 `sqlite3.OperationalError: database is locked`。常见于 Obsidian 或其他工具同时打开数据库时。
+
+**修改:**
+- `backend/app/database.py` - 添加 `timeout=30`、`PRAGMA journal_mode=WAL`、`PRAGMA busy_timeout=30000`
+- `backend/scripts/test_complete_workflow.py` - 测试库 engine 使用相同配置
+
+**说明:** WAL 模式允许读不阻塞写；busy_timeout 30 秒让 SQLite 在锁冲突时等待而非立即失败。
+
+---
+
 ## 2026-02-12
 
 ### Feat - 翻译断点续传 (--resume-translation) 与强制全量重译 (--force-retranslate)

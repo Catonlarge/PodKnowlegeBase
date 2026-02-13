@@ -108,19 +108,20 @@ class TestMarketingAngle:
                 hashtags=["#标签"]
             )
 
-    def test_marketing_angle_with_long_content_raises_validation_error(self):
+    def test_marketing_angle_with_long_content_gets_truncated(self):
         """
-        Given: content 长度大于 800
+        Given: content 长度大于 800（LLM 常超限）
         When: 创建模型实例
-        Then: 抛出 ValidationError
+        Then: 自动截断为 800 字符，验证通过
         """
-        with pytest.raises(ValidationError):
-            MarketingAngle(
-                angle_name="角度",
-                title="标题标题",
-                content="a" * 801,
-                hashtags=["#标签"]
-            )
+        angle = MarketingAngle(
+            angle_name="角度",
+            title="标题标题1",
+            content="a" * 801,
+            hashtags=["#标签1", "#标签2", "#标签3"]
+        )
+        assert len(angle.content) == 800
+        assert angle.content.endswith('...')
 
     def test_marketing_angle_with_few_hashtags_raises_validation_error(self):
         """
@@ -207,6 +208,34 @@ class TestMarketingAngle:
             hashtags=["#标签1", "#标签2", "#标签3"]
         )
         assert len(angle.title) == 30
+
+    def test_marketing_angle_with_space_separated_hashtags_in_single_string_passes(self):
+        """
+        Given: LLM 返回 ["#a #b #c"] 单字符串（空格分隔）
+        When: 创建模型实例
+        Then: 解析为 3 个独立标签
+        """
+        angle = MarketingAngle(
+            angle_name="角度",
+            title="标题标题1",
+            content="a" * 200,
+            hashtags=["#AI安全 #Anthropic招聘 #超智能"]
+        )
+        assert angle.hashtags == ["#AI安全", "#Anthropic招聘", "#超智能"]
+
+    def test_marketing_angle_with_concatenated_hashtags_no_separator_passes(self):
+        """
+        Given: LLM 返回 ["#a#b#c"] 无分隔符
+        When: 创建模型实例
+        Then: 通过 regex findall 解析为 3 个独立标签
+        """
+        angle = MarketingAngle(
+            angle_name="角度",
+            title="标题标题1",
+            content="a" * 200,
+            hashtags=["#标签1#标签2#标签3"]
+        )
+        assert angle.hashtags == ["#标签1", "#标签2", "#标签3"]
 
 
 class TestMultiAngleMarketingResponse:

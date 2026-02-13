@@ -210,11 +210,19 @@ class WorkflowPublisher:
             self.console.print("  [yellow]警告: 未配置 LLM，跳过营销文案生成[/yellow]")
             return []
 
+        existing_posts = (
+            self.db.query(MarketingPost)
+            .filter(MarketingPost.episode_id == episode.id)
+            .all()
+        )
+        if not force_remarketing and existing_posts:
+            self.console.print(f"  [dim]已跳过: 该 Episode 已有 {len(existing_posts)} 条营销文案[/dim]")
+            return existing_posts
+
         if force_remarketing:
             deleted = self.marketing_service.delete_marketing_posts_for_episode(episode.id)
             self.console.print(f"  [yellow]强制重新生成: 已清除 {deleted} 条旧营销文案[/yellow]")
 
-        # Generate multi-angle marketing copies
         copies = self.marketing_service.generate_xiaohongshu_copy_multi_angle(episode.id)
 
         # Save each copy as a MarketingPost

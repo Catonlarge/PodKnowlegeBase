@@ -4,8 +4,42 @@ Marketing Service Pydantic Schemas
 This module defines Pydantic models for marketing content generation service.
 These models enforce strict validation on AI-generated marketing copy.
 """
+import re
 from pydantic import BaseModel, Field, field_validator
 from typing import List
+
+
+# 匹配 # 开头的标签（字母数字下划线 + 中文）
+_HASHTAG_PATTERN = re.compile(r'#[\w\u4e00-\u9fff]+')
+
+
+def _expand_hashtags_list(v: List) -> List[str]:
+    """
+    Expand hashtags when LLM returns ["#a #b #c"] or ["#a#b#c"] as single string.
+
+    Strategy:
+    1. Split by separators: space, comma, Chinese comma(，) semicolon(；) enum(、)
+    2. For each part with multiple # (e.g. "#a#b"), use regex findall to extract tags
+
+    Returns flat list of individual strings (each may or may not start with #).
+    """
+    result: List[str] = []
+    for item in v:
+        if not isinstance(item, str):
+            continue
+        s = item.strip()
+        if not s:
+            continue
+        parts = re.split(r'[\s,，；、]+', s)
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            if p.count('#') >= 2:
+                result.extend(_HASHTAG_PATTERN.findall(p))
+            else:
+                result.append(p)
+    return result
 
 
 class MarketingAngle(BaseModel):
@@ -24,26 +58,34 @@ class MarketingAngle(BaseModel):
     content: str = Field(..., min_length=200, max_length=800, description="正文内容")
     hashtags: List[str] = Field(..., min_length=3, max_length=10, description="标签列表")
 
-    @field_validator('hashtags')
+    @field_validator('content', mode='before')
     @classmethod
-    def validate_hashtags_format(cls, v):
-        """
-        Validate that all hashtags start with # and are not too long.
+    def truncate_content(cls, v):
+        """Truncate content to 800 chars when LLM returns longer (avoids schema rejection)."""
+        if isinstance(v, str) and len(v) > 800:
+            return v[:797] + '...'
+        return v
 
-        Args:
-            v: List of hashtag strings
-
-        Raises:
-            ValueError: If hashtag format is invalid
+    @field_validator('hashtags', mode='before')
+    @classmethod
+    def normalize_and_validate_hashtags(cls, v):
         """
-        for tag in v:
-            # Strip whitespace before checking
+        Normalize and validate hashtags. LLM may return ["#a #b #c"] as single string.
+        """
+        if not v:
+            return v
+        expanded = _expand_hashtags_list(v if isinstance(v, list) else [v])
+        validated: List[str] = []
+        for tag in expanded:
             tag_clean = tag.strip()
             if not tag_clean.startswith('#'):
-                raise ValueError(f'标签必须以#开头: {tag}')
+                raise ValueError(f'标签必须以#开头: {tag_clean}')
             if len(tag_clean) > 20:
-                raise ValueError(f'标签过长(最多20字符): {tag}')
-        return v
+                raise ValueError(f'标签过长(最多20字符): {tag_clean}')
+            validated.append(tag_clean)
+        if len(validated) < 3:
+            raise ValueError(f'至少需要3个独立标签，当前: {validated}')
+        return validated[:10]
 
 
 class MultiAngleMarketingResponse(BaseModel):

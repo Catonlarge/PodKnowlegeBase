@@ -133,13 +133,17 @@ def get_audio_duration(file_path: str) -> float:
         result = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
             timeout=10  # 10 秒超时
         )
 
-        # 解析 JSON 输出
-        data = json.loads(result.stdout)
+        stdout_str = result.stdout
+        if not stdout_str:
+            stderr_str = (result.stderr or "").strip()
+            raise RuntimeError(f"ffprobe 无输出{': ' + stderr_str if stderr_str else ''}")
+        data = json.loads(stdout_str)
         duration_str = data.get("format", {}).get("duration")
 
         if not duration_str:

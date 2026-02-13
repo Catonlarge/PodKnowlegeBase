@@ -8,11 +8,23 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import BASE_DIR, DATABASE_PATH, DATABASE_ECHO
 from app.models.base import Base
+
+
+# SQLite busy timeout (ms). Default 5s is too short when Obsidian/other tools hold the DB.
+SQLITE_BUSY_TIMEOUT_MS = 30000
+
+
+def _set_sqlite_pragma(dbapi_conn, connection_record):
+    """Enable WAL mode and busy_timeout for SQLite (reduces 'database is locked' errors)."""
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    cursor.close()
 
 
 # Global variables for engine and session factory
@@ -40,8 +52,12 @@ def init_database() -> None:
     _engine = create_engine(
         database_url,
         echo=DATABASE_ECHO,
-        connect_args={"check_same_thread": False},  # Allow multi-threading
+        connect_args={
+            "check_same_thread": False,
+            "timeout": SQLITE_BUSY_TIMEOUT_MS / 1000,
+        },
     )
+    event.listen(_engine, "connect", _set_sqlite_pragma)
 
     # Create session factory
     _session_factory = sessionmaker(
