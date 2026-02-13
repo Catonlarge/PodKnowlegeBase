@@ -36,9 +36,9 @@ EnglishPod3 Enhanced 是一个**本地优先**的英语学习内容自动化工�
 
 ### 1. 环境配置
 
-```bash
+```powershell
 # 克隆项目
-cd D:\programming_enviroment\EnglishPod-knowledgeBase
+cd D:\programming_enviroment\EnglishPod-knowledgeBase\backend
 
 # 激活虚拟环境 (PowerShell)
 D:\programming_enviroment\EnglishPod-knowledgeBase\backend\venv-kb\Scripts\Activate.ps1
@@ -49,18 +49,18 @@ pip install -r requirements.txt
 
 ### 2. 配置 API 密钥
 
-**重要**: 系统已改用 Windows 环境变量存储 API 密钥（不再使用 `.env` 文件）。
+**重要**: 系统使用 Windows 环境变量存储 API 密钥（不使用 `.env` 文件）。
 
 在 PowerShell 中设置环境变量：
 
 ```powershell
-# 必需：Moonshot Kimi kimi-k2-0905-preview (主要 LLM - 字幕校对、分章、翻译)
+# 必需：Moonshot Kimi (主要 LLM - 字幕校对、分章、翻译、营销文案)
 setx MOONSHOT_API_KEY "sk-xxx"
 
-# 必需：Zhipu GLM glm-4-plus (备用 LLM)
+# 必需：Zhipu GLM (备用 LLM)
 setx ZHIPU_API_KEY "xxx"
 
-# 必需：Google Gemini gemini-2.5-flash (备用 LLM)
+# 必需：Google Gemini (备用 LLM)
 setx GEMINI_API_KEY "xxx"
 
 # 必需：HuggingFace Token (WhisperX 说话人分离)
@@ -76,11 +76,13 @@ setx NOTION_API_KEY "secret_xxx"
 ai:
   moonshot:
     base_url: "https://api.moonshot.cn/v1"
-    model: "kimi-k2-0905-preview"  # 主要 LLM
+    model: "kimi-k2-turbo-preview"   # 主要 LLM
   zhipu:
-    model: "glm-4-plus"              # 备用 LLM
+    model: "glm-4.7-flash"           # 备用 LLM
   gemini:
     model: "gemini-2.5-flash"        # 备用 LLM
+  marketing:
+    provider: "moonshot"             # 营销文案生成使用的 LLM
 ```
 
 ---
@@ -137,6 +139,9 @@ python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ
 
 # 强制重新开始（忽略断点）
 python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --restart
+
+# 强制重新切分（清除旧章节并重新调用 AI）
+python scripts/run.py https://www.youtube.com/watch?v=dQw4w9WgXcQ --force-resegment
 ```
 
 **生成的 Obsidian 文档位置：**
@@ -164,7 +169,7 @@ obsidian/episodes/42-视频标题.md
 ---
 task_id: 42
 url: https://www.youtube.com/watch?v=dQw4w9WgXcQ
-status: approved    # 从 pending_review 改为 approved
+status: approved    # 从 pending_review 改为 approved，同步后变为 APPROVED(7)
 ---
 ```
 
@@ -176,8 +181,8 @@ status: approved    # 从 pending_review 改为 approved
 
 #### 步骤 1：同步审核状态
 
-```bash
-# 扫描 Obsidian 文档，同步 status: approved 的文档到数据库
+```powershell
+# 扫描 Obsidian 文档，将 status: approved 的文档同步到数据库（更新为 APPROVED 状态）
 python scripts/sync_review_status.py
 ```
 
@@ -200,7 +205,7 @@ Obsidian 文档审核状态
   待审核 (pending_review): 1
   已通过 (approved): 1
 
-将同步 1 个已审核通过的 Episode 到数据库
+将同步 1 个已审核通过的 Episode 到数据库（状态更新为 APPROVED）
 确认继续? (y/n): y
 
 同步到数据库...
@@ -209,8 +214,8 @@ Obsidian 文档审核状态
 
 #### 步骤 2：发布到平台
 
-```bash
-# 发布指定 Episode 到 Notion
+```powershell
+# 发布指定 Episode 到 Notion（需先完成步骤 1，Episode 状态为 APPROVED）
 python scripts/publish.py --id 42
 ```
 
@@ -220,13 +225,10 @@ python scripts/publish.py --id 42
 EnglishPod3 Enhanced - 发布工作流
 Episode ID: 42
 
-步骤 1/3: 解析 Obsidian 文档...
-  检测到 5 处修改
-
-步骤 2/3: 生成营销文案...
+步骤 1/2: 生成营销文案...
   生成 5 条营销文案
 
-步骤 3/3: 分发到各平台...
+步骤 2/2: 分发到各平台...
   发布到 notion...
     成功: notion
   发布到 feishu...
@@ -254,32 +256,44 @@ Episode ID: 42
 
 ### run.py - 主工作流
 
-```bash
-python scripts/run.py <URL> [--restart]
+```powershell
+python scripts/run.py <URL> [--restart] [--force-resegment]
 ```
 
 | 参数 | 说明 |
 |------|------|
 | `URL` | YouTube 视频 URL（必需） |
 | `--restart` | 强制重新开始，忽略断点续传（可选） |
+| `--force-resegment` | 强制重新切分，清除旧章节并重新调用 AI（可选） |
 
 ### sync_review_status.py - 同步审核状态
 
-```bash
+```powershell
 python scripts/sync_review_status.py
 ```
 
-扫描 `obsidian/episodes/` 目录，将 `status: approved` 的文档同步到数据库。
+扫描 `obsidian/episodes/` 目录，将 `status: approved` 的文档同步到数据库（更新为 APPROVED 状态，并回填用户对翻译的修改）。
 
 ### publish.py - 发布工作流
 
-```bash
-python scripts/publish.py --id <EPISODE_ID>
+```powershell
+python scripts/publish.py --id <EPISODE_ID> [--force-remarketing]
 ```
 
 | 参数 | 说明 |
 |------|------|
 | `--id` | Episode ID（必需） |
+| `--force-remarketing` | 强制重新生成营销文案（可选） |
+
+### test_complete_workflow.py - 完整流程测试（开发用）
+
+从本地音频文件测试全流程（跳过 URL 下载），支持断点续传、强制重译等：
+
+```powershell
+python scripts/test_complete_workflow.py --episode-id <ID> --test-db
+python scripts/test_complete_workflow.py --episode-id <ID> --test-db --resume-translation   # 断点续传翻译
+python scripts/test_complete_workflow.py --episode-id <ID> --test-db --force-remarketing   # 强制重新生成营销文案
+```
 
 ---
 
@@ -302,9 +316,11 @@ python scripts/publish.py --id <EPISODE_ID>
 │   ↓                                                             │
 │  TRANSLATED(5)       ← LLM 逐句翻译                              │
 │   ↓                                                             │
-│  READY_FOR_REVIEW(6) ← 生成 Obsidian 文档                       │
-│   ↓  用户在 Obsidian 中审核，修改 status: approved              │
-│  PUBLISHED(7)        ← 发布到 Notion                            │
+│  READY_FOR_REVIEW(6) ← 生成 Obsidian 文档                        │
+│   ↓  用户在 Obsidian 中审核，修改 status: approved               │
+│  APPROVED(7)         ← sync_review_status.py 同步审核状态        │
+│   ↓                                                             │
+│  PUBLISHED(8)        ← publish.py 发布到 Notion                  │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -315,6 +331,7 @@ python scripts/publish.py --id <EPISODE_ID>
 
 - 中断时状态为 `SEGMENTED(4)`，重启后直接执行 `translate_episode`
 - 使用 `--restart` 参数可强制从头开始
+- 使用 `--force-resegment` 参数可仅重新执行章节切分（清除旧章节）
 
 ---
 
@@ -329,15 +346,17 @@ D:\programming_enviroment\EnglishPod-knowledgeBase\
 │   │   ├── workflows\           # 工作流编排
 │   │   └── enums\               # 枚举定义
 │   ├── scripts\                 # CLI 入口脚本
-│   │   ├── run.py               # 主工作流
-│   │   ├── sync_review_status.py
-│   │   └── publish.py
-│   ├── tests\                   # 测试
+│   │   ├── run.py               # 主工作流（URL → Obsidian）
+│   │   ├── sync_review_status.py # 同步审核状态
+│   │   ├── publish.py           # 发布到 Notion
+│   │   └── test_complete_workflow.py  # 完整流程测试（本地音频）
+│   ├── tests\                   # 单元/集成测试
 │   ├── obsidian\                # Obsidian 文档输出
-│   │   └── episodes\            # 字幕文档
+│   │   ├── episodes\            # 字幕文档
+│   │   └── marketing\           # 营销文案
 │   ├── data\                    # 本地数据
-│   │   ├── audio\               # 音频文件
-│   │   └── knowledge_base.db    # SQLite 数据库
+│   │   ├── audios\              # 音频文件
+│   │   └── episodes.db          # SQLite 数据库
 │   └── venv-kb\                 # Python 虚拟环境
 └── docs\                        # 项目文档
 ```
@@ -348,8 +367,9 @@ D:\programming_enviroment\EnglishPod-knowledgeBase\
 
 ### Q: 如何查看所有 Episode 的状态？
 
-```bash
-# 进入 Python REPL
+```powershell
+# 进入 backend 目录后启动 Python REPL
+cd backend
 python
 ```
 
@@ -358,18 +378,18 @@ from app.database import get_session
 from app.models import Episode
 from app.enums.workflow_status import WorkflowStatus
 
-db = get_session()
-episodes = db.query(Episode).order_by(Episode.id.desc()).limit(10).all()
-
-for ep in episodes:
-    print(f"ID: {ep.id} | Title: {ep.title[:40]} | Status: {ep.workflow_status.label}")
+with get_session() as db:
+    episodes = db.query(Episode).order_by(Episode.id.desc()).limit(10).all()
+    for ep in episodes:
+        status_label = WorkflowStatus(ep.workflow_status).label
+        print(f"ID: {ep.id} | Title: {ep.title[:40]} | Status: {status_label}")
 ```
 
 ### Q: Notion 发布失败怎么办？
 
-检查 `.env` 中的 `NOTION_API_KEY` 和 `NOTION_DATABASE_ID` 是否正确：
+检查环境变量 `NOTION_API_KEY` 和 `NOTION_DATABASE_ID` 是否正确配置。发布前需确保 Episode 状态为 APPROVED（先运行 `sync_review_status.py`）：
 
-```bash
+```powershell
 # 测试 Notion 连接
 python scripts/publish.py --id <episode_id>
 ```
@@ -385,9 +405,9 @@ python scripts/run.py <原始_URL> --restart
 
 ### Q: Obsidian 文档可以手动编辑吗？
 
-可以。任何修改都会在发布时被检测并：
-1. 回填到数据库（`translations.is_edited = TRUE`）
-2. 体现到 Notion 发布内容中
+可以。在 Obsidian 中修改翻译内容后，运行 `sync_review_status.py` 时会：
+1. 检测并回填到数据库（`translations.is_edited = TRUE`）
+2. 发布时体现到 Notion 内容中
 
 ---
 
@@ -406,7 +426,7 @@ python scripts/run.py <原始_URL> --restart
                               │
 ┌─────────────────────────────────────────────────────────────┐
 │                       服务层                                 │
-│  Download │ Transcription │ Proofreading │ Segmentation     │
+│  Download │ Transcription │ SubtitleProofreading │ Segmentation │
 │  Translation │ Obsidian │ Marketing │ NotionPublisher       │
 └─────────────────────────────────────────────────────────────┘
                               │
@@ -426,9 +446,9 @@ python scripts/run.py <原始_URL> --restart
 
 ```powershell
 # 必需：LLM 服务（三选一或全部配置）
-setx MOONSHOT_API_KEY "sk-xxx"      # Moonshot Kimi kimi-k2-0905-preview (主要)
-setx ZHIPU_API_KEY "xxx"             # Zhipu GLM glm-4-plus (备用)
-setx GEMINI_API_KEY "xxx"            # Google Gemini gemini-2.5-flash (备用)
+setx MOONSHOT_API_KEY "sk-xxx"      # Moonshot Kimi kimi-k2-turbo-preview (主要)
+setx ZHIPU_API_KEY "xxx"            # Zhipu GLM glm-4.7-flash (备用)
+setx GEMINI_API_KEY "xxx"           # Google Gemini gemini-2.5-flash (备用)
 
 # 必需：WhisperX 说话人分离
 setx HF_TOKEN "hf_xxx"
@@ -444,11 +464,13 @@ setx NOTION_API_KEY "secret_xxx"
 ```yaml
 ai:
   moonshot:
-    model: "kimi-k2-0905-preview"
+    model: "kimi-k2-turbo-preview"
   zhipu:
-    model: "glm-4-plus"
+    model: "glm-4.7-flash"
   gemini:
     model: "gemini-2.5-flash"
+  marketing:
+    provider: "moonshot"
 
 database:
   path: "./data/episodes.db"
@@ -456,6 +478,7 @@ database:
 obsidian:
   vault_path: "D:/programming_enviroment/EnglishPod-knowledgeBase/obsidian"
   notes_subdir: "episodes"
+  marketing_subdir: "marketing"
 
 notion:
   parent_page_id: "2ff27d357f368046aba9d3a7cc21f05c"

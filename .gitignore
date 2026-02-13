@@ -41,6 +41,7 @@ config.yaml
 
 # ==================== Documentation (Local Only) ====================
 docs/
+docs/changelog.md
 
 # ==================== Obsidian Vault (User Data) ====================
 obsidian/
