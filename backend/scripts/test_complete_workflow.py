@@ -261,24 +261,42 @@ class CompleteWorkflowTester:
                 self.console.print(f"  [{cue_id}] {orig}...")
                 self.console.print(f"    -> {fixed}...")
 
-    def segment_content(self, force_resegment: bool = False) -> None:
+    def segment_content(
+        self,
+        force_resegment: bool = False,
+        resume_segment: bool = False
+    ) -> None:
         """Step 3: 语义章节切分
 
-        当 force_resegment=True 时，即使已分章也会删除旧章节并重新调用 AI，
-        行为与 preview_segmentation_episode19.py 一致（每次重新生成）。
+        当 force_resegment=True 时，即使已分章也会删除旧章节并重新调用 AI。
+        resume_segment: 当 status>=SEGMENTED 但章节数为 0（不一致状态）时仍执行切分。
         """
         self.console.print()
         self.console.print("[bold cyan]Step 3: 语义章节切分[/bold cyan]")
         self.console.print("-" * 60)
 
-        # 检查状态（force_resegment 时跳过，强制执行）
-        if not force_resegment and self.episode.workflow_status >= WorkflowStatus.SEGMENTED.value:
+        chapters_count = self.db.query(Chapter).filter(
+            Chapter.episode_id == self.episode.id
+        ).count()
+
+        # 检查状态（force_resegment / resume_segment 时跳过检查，强制执行）
+        should_skip = (
+            not force_resegment
+            and not resume_segment
+            and self.episode.workflow_status >= WorkflowStatus.SEGMENTED.value
+        )
+        if should_skip:
             self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
             chapters = self.db.query(Chapter).filter(
                 Chapter.episode_id == self.episode.id
             ).all()
             self._display_chapter_preview(chapters)
             return
+
+        if resume_segment and chapters_count == 0:
+            self.console.print("[yellow]断点续传: 状态已推进但无章节数据，补充执行章节切分[/yellow]")
+            self.episode.workflow_status = WorkflowStatus.PROOFREAD.value
+            self.db.flush()
 
         # 强制重新切分：清除旧章节并回退状态
         if force_resegment and self.episode.workflow_status >= WorkflowStatus.SEGMENTED.value:
@@ -312,19 +330,41 @@ class CompleteWorkflowTester:
         # 显示章节预览
         self._display_chapter_preview(chapters)
 
-    def translate_content(self) -> None:
-        """Step 4: 批量翻译"""
+    def translate_content(
+        self,
+        force_retranslate: bool = False,
+        resume_translation: bool = False
+    ) -> None:
+        """Step 4: 批量翻译
+
+        断点续传: TranslationService.batch_translate 只翻译未完成的 cue，
+        无需删除已有翻译。resume_translation 用于在 status>=TRANSLATED 时仍执行本步骤。
+        """
         self.console.print()
         self.console.print("[bold cyan]Step 4: 批量翻译[/bold cyan]")
         self.console.print("-" * 60)
 
-        # 检查状态
-        if self.episode.workflow_status >= WorkflowStatus.TRANSLATED.value:
+        # 创建翻译服务（使用 config 中的 provider 配置）
+        service = TranslationService(self.db, provider="moonshot")
+
+        # 检查状态: force_retranslate 或 resume_translation 时强制执行
+        should_skip = (
+            not force_retranslate
+            and not resume_translation
+            and self.episode.workflow_status >= WorkflowStatus.TRANSLATED.value
+        )
+        if should_skip:
             self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
             return
 
-        # 创建翻译服务（使用 config 中的 provider 配置）
-        service = TranslationService(self.db, provider="moonshot")
+        if resume_translation:
+            self.console.print("[yellow]断点续传: 仅翻译未完成的 cue[/yellow]")
+
+        if force_retranslate:
+            self.console.print("[yellow]强制重新翻译: 清除旧翻译记录[/yellow]")
+            deleted = service.delete_translations_for_episode(self.episode.id, language_code="zh")
+            self.console.print(f"  已删除: {deleted} 条")
+            self.db.refresh(self.episode)
 
         # 执行翻译
         self.console.print(f"开始批量翻译: {self.episode.title}")
@@ -356,8 +396,9 @@ class CompleteWorkflowTester:
         self.console.print(f"  文件名: {file_path.name}")
         self.console.print(f"  文件大小: {file_path.stat().st_size / 1024:.1f} KB")
 
-        # 更新状态
-        self.episode.workflow_status = WorkflowStatus.READY_FOR_REVIEW.value
+        # 仅当翻译已全部完成时，才推进到 READY_FOR_REVIEW
+        if self.episode.workflow_status >= WorkflowStatus.TRANSLATED.value:
+            self.episode.workflow_status = WorkflowStatus.READY_FOR_REVIEW.value
         self.db.commit()
         self.db.refresh(self.episode)
 
@@ -514,7 +555,10 @@ class CompleteWorkflowTester:
         skip_marketing: bool = False,
         skip_notion: bool = False,
         force_resegment: bool = False,
+        resume_segment: bool = False,
         force_remarketing: bool = False,
+        force_retranslate: bool = False,
+        resume_translation: bool = False,
         only_marketing: bool = False,
     ) -> Episode:
         """运行完整工作流
@@ -526,7 +570,10 @@ class CompleteWorkflowTester:
             skip_marketing: 跳过营销文案生成
             skip_notion: 跳过 Notion 发布
             force_resegment: 强制重新切分（清除旧章节并重新调用 AI）
+            resume_segment: 章节断点续传（status>=SEGMENTED 但无章节数据时补充切分）
             force_remarketing: 强制重新生成营销文案（先删除旧文案再生成）
+            force_retranslate: 强制全量重译（清除旧翻译再调用 LLM）
+            resume_translation: 断点续传翻译（仅翻译未完成的 cue，不删除已有）
             only_marketing: 仅运行营销文案步骤（需配合 episode_id，跳过转录/校对/切分/翻译/Notion）
         """
         if not audio_path and not episode_id:
@@ -563,10 +610,16 @@ class CompleteWorkflowTester:
             self.console.print("[yellow]跳过字幕校对[/yellow]")
 
         # Step 4: 章节切分
-        self.segment_content(force_resegment=force_resegment)
+        self.segment_content(
+            force_resegment=force_resegment,
+            resume_segment=resume_segment
+        )
 
         # Step 5: 翻译
-        self.translate_content()
+        self.translate_content(
+            force_retranslate=force_retranslate,
+            resume_translation=resume_translation
+        )
 
         # Step 6: 生成 Obsidian 文档
         obsidian_path = self.generate_obsidian_doc()
@@ -658,8 +711,14 @@ def main():
     parser.add_argument("--test-db", action="store_true", help="使用测试数据库")
     parser.add_argument("--force-resegment", action="store_true",
                         help="强制重新切分（清除旧章节并重新调用 AI）")
+    parser.add_argument("--resume-segment", action="store_true",
+                        help="章节断点续传（status>=SEGMENTED 但无章节数据时补充切分）")
     parser.add_argument("--force-remarketing", action="store_true",
                         help="强制重新生成营销文案（先删除数据库旧文案再生成）")
+    parser.add_argument("--force-retranslate", action="store_true",
+                        help="强制全量重译（清除旧翻译再调用 LLM）")
+    parser.add_argument("--resume-translation", action="store_true",
+                        help="断点续传翻译（仅翻译未完成的 cue，不删除已有，用于补全 [未翻译]）")
     parser.add_argument("--only-marketing", action="store_true",
                         help="仅运行营销文案步骤（需配合 --episode-id，跳过转录/校对/切分/翻译/Notion）")
 
@@ -673,6 +732,8 @@ def main():
         parser.error("audio 和 --episode-id 不能同时使用")
     if args.only_marketing and not args.episode_id:
         parser.error("--only-marketing 必须配合 --episode-id 使用")
+    if args.force_retranslate and args.resume_translation:
+        parser.error("--force-retranslate 与 --resume-translation 不能同时使用")
 
     console = Console()
 
@@ -729,7 +790,10 @@ def main():
                 skip_marketing=args.skip_marketing,
                 skip_notion=args.skip_notion,
                 force_resegment=args.force_resegment,
+                resume_segment=args.resume_segment,
                 force_remarketing=args.force_remarketing,
+                force_retranslate=args.force_retranslate,
+                resume_translation=args.resume_translation,
                 only_marketing=args.only_marketing,
             )
 

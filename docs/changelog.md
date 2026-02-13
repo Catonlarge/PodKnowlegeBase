@@ -6,6 +6,49 @@
 
 ## 2026-02-12
 
+### Feat - 翻译断点续传 (--resume-translation) 与强制全量重译 (--force-retranslate)
+
+**问题:** Episode 文档显示 `[未翻译]`。TranslationService 已支持断点续传（`_get_pending_cues` 只返回未完成 cue），但 `translate_content` 在 `workflow_status >= TRANSLATED` 时直接跳过，导致无法补全缺失翻译。
+
+**根因分析:** 缺失多为进程中断（Ctrl+C、超时等）导致批次循环未跑完。更严重的是：原逻辑在 `success_count > 0` 时就更新为 TRANSLATED，导致未翻译完也被标记为完成，后续流程误判跳过翻译步骤。
+
+**状态更新修复:**
+- `TranslationService.batch_translate`: 仅当 `_get_pending_cues` 返回空（全部完成）时才调用 `_update_episode_status`
+- `runner.translate_episode` / `generate_obsidian_doc`: 依赖服务更新状态，仅在 status >= TRANSLATED 时推进到 READY_FOR_REVIEW
+
+**修改文件:**
+- `backend/app/services/translation_service.py` - 新增 `delete_translations_for_episode()`（仅用于 force 全量重译）
+- `backend/scripts/test_complete_workflow.py` - 新增 `--resume-translation`（断点续传，不删除已有）；`--force-retranslate`（全量重译，先删除再翻译）
+
+**用法:**
+```powershell
+# 断点续传：仅翻译未完成的 ~300 条（推荐，不重复调用 LLM）
+python scripts/test_complete_workflow.py --episode-id 1 --resume-translation --skip-marketing --test-db
+
+# 全量重译：清除后重新翻译全部（慎用，消耗大量 token）
+python scripts/test_complete_workflow.py --episode-id 1 --force-retranslate --skip-marketing --test-db
+```
+
+---
+
+### Fix - Obsidian 无章节划分（Chapters: 0）
+
+**问题:** 用 test_complete_workflow 跑全流程，Obsidian 文档无章节导航。测试库 episode 1 有 `Chapters: 0`，因 segment_content 在 `workflow_status >= SEGMENTED` 时跳过，而该 episode 状态为 READY_FOR_REVIEW（旧逻辑错误推进）。
+
+**修改文件:**
+- `backend/scripts/test_complete_workflow.py` - 新增 `--resume-segment`，当 status>=SEGMENTED 但章节数为 0 时补充执行切分；`check_translation_status.py` 增加 Chapter 数量检查
+
+**用法:**
+```powershell
+# 补充章节切分（无章节数据时）
+python scripts/test_complete_workflow.py --episode-id 1 --resume-segment --resume-translation --skip-marketing --test-db
+
+# 或强制重新切分（清除后重跑）
+python scripts/test_complete_workflow.py --episode-id 1 --force-resegment --test-db
+```
+
+---
+
 ### Feat - 强制重新切分 (--force-resegment)
 
 **问题:** preview 脚本与 workflow 章节划分不一致，因 workflow 在 episode 已分章时跳过 AI 调用，仅显示库中旧章节。
@@ -19,13 +62,13 @@
 
 ---
 
-### Fix - 营销文案兜底改用章节小结
+### Fix - 营销文案兜底改用章节小结 + 重试机制生效
 
-**问题:** 兜底逻辑使用 `episode.ai_summary`，但该字段在数据库中常为空；日志显示 AI 已生成内容，但 Obsidian 文件仍为 fallback。
+**问题:** 兜底逻辑使用 `episode.ai_summary`，但该字段在数据库中常为空；内部 try/except 吞掉异常导致 @ai_retry 无法重试。
 
 **修改文件:**
-- `backend/app/services/marketing_service.py` - 新增 `_get_chapter_summaries()`，兜底内容改为所有章节 `summary` 拼接；无章节或全空则用 `episode.title`
-- `backend/tests/unit/services/test_marketing_fallback.py` - 更新用例以适配章节小结兜底逻辑
+- `backend/app/services/marketing_service.py` - 新增 `_get_chapter_summaries()`，兜底内容改为所有章节 `summary` 拼接；移除内部 try/except，让异常上抛给 @ai_retry 重试；在 `generate_xiaohongshu_copy_multi_angle` 捕获重试耗尽后兜底
+- `backend/tests/unit/services/test_marketing_fallback.py` - 更新兜底用例；新增 `TestMarketingRetryAndFallback` 测试重试与兜底流程
 
 ---
 

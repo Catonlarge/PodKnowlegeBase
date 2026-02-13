@@ -305,14 +305,21 @@ class TestStepFunctions:
     def test_translate_episode_success(self, mock_service_cls, test_session, sample_episode):
         """
         Given: Episode with SEGMENTED status
-        When: Calling translate_episode()
-        Then: Translates content and updates status to TRANSLATED
+        When: Calling translate_episode() and TranslationService 全部翻译完成
+        Then: Status 由 TranslationService 更新为 TRANSLATED，runner 通过 refresh 获取
         """
         sample_episode.workflow_status = WorkflowStatus.SEGMENTED
         test_session.commit()
 
+        def mock_batch_translate(episode_id, language_code="zh"):
+            ep = test_session.get(Episode, episode_id)
+            if ep:
+                ep.workflow_status = WorkflowStatus.TRANSLATED.value
+                test_session.flush()
+            return 10
+
         mock_service = Mock()
-        mock_service.batch_translate.return_value = None
+        mock_service.batch_translate.side_effect = mock_batch_translate
         mock_service_cls.return_value = mock_service
 
         result = translate_episode(sample_episode, test_session)
@@ -320,10 +327,31 @@ class TestStepFunctions:
         assert result.workflow_status == WorkflowStatus.TRANSLATED
         mock_service.batch_translate.assert_called_once()
 
+    @patch('app.workflows.runner.TranslationService')
+    def test_translate_episode_keeps_segmented_when_partial(
+        self, mock_service_cls, test_session, sample_episode
+    ):
+        """
+        Given: Episode with SEGMENTED status
+        When: batch_translate 部分完成（TranslationService 不更新 status）
+        Then: Status 保持 SEGMENTED
+        """
+        sample_episode.workflow_status = WorkflowStatus.SEGMENTED
+        test_session.commit()
+
+        mock_service = Mock()
+        mock_service.batch_translate.return_value = 5  # 部分成功，不修改 episode
+        mock_service_cls.return_value = mock_service
+
+        result = translate_episode(sample_episode, test_session)
+
+        assert result.workflow_status == WorkflowStatus.SEGMENTED
+        mock_service.batch_translate.assert_called_once()
+
     @patch('app.workflows.runner.ObsidianService')
     def test_generate_obsidian_doc_success(self, mock_service_cls, test_session, sample_episode):
         """
-        Given: Episode with TRANSLATED status
+        Given: Episode with TRANSLATED status (翻译已全部完成)
         When: Calling generate_obsidian_doc()
         Then: Generates Obsidian document and updates status to READY_FOR_REVIEW
         """
@@ -337,4 +365,25 @@ class TestStepFunctions:
         result = generate_obsidian_doc(sample_episode, test_session)
 
         assert result.workflow_status == WorkflowStatus.READY_FOR_REVIEW
+        mock_service.render_episode.assert_called_once()
+
+    @patch('app.workflows.runner.ObsidianService')
+    def test_generate_obsidian_doc_keeps_segmented_when_translation_incomplete(
+        self, mock_service_cls, test_session, sample_episode
+    ):
+        """
+        Given: Episode with SEGMENTED status (翻译未完成)
+        When: Calling generate_obsidian_doc()
+        Then: Generates document but status stays SEGMENTED
+        """
+        sample_episode.workflow_status = WorkflowStatus.SEGMENTED
+        test_session.commit()
+
+        mock_service = Mock()
+        mock_service.render_episode.return_value = "# Test Episode\n\nContent..."
+        mock_service_cls.return_value = mock_service
+
+        result = generate_obsidian_doc(sample_episode, test_session)
+
+        assert result.workflow_status == WorkflowStatus.SEGMENTED
         mock_service.render_episode.assert_called_once()

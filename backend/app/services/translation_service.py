@@ -185,9 +185,12 @@ class TranslationService:
 
         logger.info(f"批量翻译完成: episode_id={episode_id}, 成功={success_count}/{len(pending_cues)}")
 
-        # 更新 Episode 状态
-        if success_count > 0:
+        # 仅当所有 cue 全部翻译完成时，才更新 Episode 状态为 TRANSLATED
+        remaining_pending = self._get_pending_cues(episode_id, language_code)
+        if not remaining_pending:
             self._update_episode_status(episode_id)
+        elif success_count > 0:
+            logger.info(f"仍有 {len(remaining_pending)} 条未完成，状态保持 SEGMENTED，支持断点续传")
 
         return success_count
 
@@ -443,6 +446,41 @@ class TranslationService:
 
         logger.info(f"待翻译 Cue 数量: {len(pending_cues)}/{len(cues)}")
         return pending_cues
+
+    def delete_translations_for_episode(
+        self,
+        episode_id: int,
+        language_code: str = "zh"
+    ) -> int:
+        """
+        删除指定 Episode 下所有 Cue 的翻译记录，用于强制重新翻译。
+
+        Args:
+            episode_id: Episode ID
+            language_code: 语言代码
+
+        Returns:
+            int: 删除的记录数
+        """
+        cue_ids = [
+            row[0] for row in self.db.query(TranscriptCue.id)
+            .join(AudioSegment, TranscriptCue.segment_id == AudioSegment.id)
+            .filter(AudioSegment.episode_id == episode_id)
+            .all()
+        ]
+        if not cue_ids:
+            return 0
+
+        from sqlalchemy import delete
+        stmt = delete(Translation).where(
+            Translation.cue_id.in_(cue_ids),
+            Translation.language_code == language_code
+        )
+        result = self.db.execute(stmt)
+        self.db.commit()
+        count = result.rowcount
+        logger.info(f"已删除 episode_id={episode_id} 的翻译记录: {count} 条 (language={language_code})")
+        return count
 
     def _create_translation(
         self,

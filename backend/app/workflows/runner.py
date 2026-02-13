@@ -307,17 +307,20 @@ def translate_episode(episode: Episode, db: Session) -> Episode:
     """
     Translate transcript cues to target language.
 
+    TranslationService 仅在全部 cue 翻译完成时更新为 TRANSLATED，
+    未完成时保持 SEGMENTED 以支持断点续传。
+
     Args:
         episode: Episode to process
         db: Database session
 
     Returns:
-        Updated Episode with TRANSLATED status
+        Updated Episode (TRANSLATED if all done, else SEGMENTED)
     """
     service = TranslationService(db, provider="moonshot")
     service.batch_translate(episode.id, language_code="zh")
 
-    episode.workflow_status = WorkflowStatus.TRANSLATED
+    db.refresh(episode)  # 使用 TranslationService 更新的状态
     db.commit()
 
     return episode
@@ -327,17 +330,20 @@ def generate_obsidian_doc(episode: Episode, db: Session) -> Episode:
     """
     Generate Obsidian markdown document.
 
+    仅当翻译已全部完成 (status >= TRANSLATED) 时才推进到 READY_FOR_REVIEW。
+
     Args:
         episode: Episode to process
         db: Database session
 
     Returns:
-        Updated Episode with READY_FOR_REVIEW status
+        Updated Episode (READY_FOR_REVIEW if translation complete)
     """
     service = ObsidianService(db)
     service.render_episode(episode.id)
 
-    episode.workflow_status = WorkflowStatus.READY_FOR_REVIEW
+    if episode.workflow_status >= WorkflowStatus.TRANSLATED.value:
+        episode.workflow_status = WorkflowStatus.READY_FOR_REVIEW
     db.commit()
 
     return episode
