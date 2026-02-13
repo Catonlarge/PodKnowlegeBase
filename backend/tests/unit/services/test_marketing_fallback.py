@@ -2,12 +2,17 @@
 MarketingService 摘要兜底功能测试
 
 测试 AI 失败时使用章节小结兜底的策略。
+测试 schema 验证失败时的重试机制。
 """
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import pytest
 
 from app.services.marketing_service import MarketingService
-from app.models import Episode, Chapter
+from app.models import Episode, Chapter, AudioSegment, TranscriptCue
+from app.services.ai.schemas.marketing_schema import (
+    MultiAngleMarketingResponse,
+    MarketingAngle,
+)
 from app.enums.workflow_status import WorkflowStatus
 
 
@@ -205,3 +210,128 @@ class TestMarketingFallback:
         # Assert
         assert len(result) == 1
         assert result[0].key_quotes == key_quotes
+
+
+class TestMarketingRetryAndFallback:
+    """测试 MarketingService 重试机制与兜底流程"""
+
+    def _make_episode_with_chapters(self, test_session, title="重试测试"):
+        """创建带章节小结的 Episode"""
+        episode = Episode(
+            title=title,
+            audio_path="/test/path.mp3",
+            file_hash="retry_test_hash",
+            duration=300.0,
+            workflow_status=WorkflowStatus.TRANSLATED.value,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        segment = AudioSegment(
+            episode_id=episode.id,
+            segment_index=0,
+            segment_id="seg_001",
+            start_time=0.0,
+            end_time=300.0,
+            status="completed",
+        )
+        test_session.add(segment)
+        test_session.flush()
+
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=0.0,
+            end_time=10.0,
+            speaker="SPEAKER_00",
+            text="Test transcript for marketing.",
+        )
+        test_session.add(cue)
+        test_session.flush()
+
+        ch = Chapter(
+            episode_id=episode.id,
+            chapter_index=0,
+            title="第一章",
+            summary="章节小结用于兜底内容。",
+            start_time=0.0,
+            end_time=300.0,
+        )
+        test_session.add(ch)
+        test_session.flush()
+
+        return episode
+
+    def test_generate_multi_angle_returns_fallback_when_ai_fails_after_retries(
+        self, test_session
+    ):
+        """Given: AI 调用始终失败 When: 重试耗尽 Then: 返回章节小结兜底"""
+        # Arrange
+        episode = self._make_episode_with_chapters(test_session)
+        service = MarketingService(
+            test_session, provider="moonshot", api_key="test_key"
+        )
+
+        mock_invoke = Mock(side_effect=ValueError("schema validation failed"))
+        service.structured_llm = Mock()
+        service.structured_llm.with_structured_output.return_value.invoke = (
+            mock_invoke
+        )
+
+        # Act
+        result = service.generate_xiaohongshu_copy_multi_angle(episode.id)
+
+        # Assert
+        assert len(result) == 1
+        assert result[0].content == "章节小结用于兜底内容。"
+        assert result[0].metadata["fallback"] is True
+        assert mock_invoke.call_count == 2
+
+    def test_generate_multi_angle_retries_then_succeeds_on_second_attempt(
+        self, test_session
+    ):
+        """Given: 首次 AI 调用失败 When: 第二次成功 Then: 返回 AI 结果而非兜底"""
+        # Arrange
+        episode = self._make_episode_with_chapters(test_session)
+        service = MarketingService(
+            test_session, provider="moonshot", api_key="test_key"
+        )
+
+        valid_response = MultiAngleMarketingResponse(
+            angles=[
+                MarketingAngle(
+                    angle_name="角度一",
+                    title="测试标题一",
+                    content="x" * 200,
+                    hashtags=["#测试", "#播客", "#学习"],
+                ),
+                MarketingAngle(
+                    angle_name="角度二",
+                    title="测试标题二",
+                    content="y" * 200,
+                    hashtags=["#测试", "#播客", "#学习"],
+                ),
+                MarketingAngle(
+                    angle_name="角度三",
+                    title="测试标题三",
+                    content="z" * 200,
+                    hashtags=["#测试", "#播客", "#学习"],
+                ),
+            ]
+        )
+
+        mock_invoke = Mock(
+            side_effect=[ValueError("schema fail"), valid_response]
+        )
+        service.structured_llm = Mock()
+        service.structured_llm.with_structured_output.return_value.invoke = (
+            mock_invoke
+        )
+
+        # Act
+        result = service.generate_xiaohongshu_copy_multi_angle(episode.id)
+
+        # Assert
+        assert len(result) == 3
+        assert result[0].metadata.get("angle_tag") == "角度一"
+        assert "fallback" not in result[0].metadata
+        assert mock_invoke.call_count == 2

@@ -507,12 +507,15 @@ class MarketingService:
         # 2. 获取完整字幕内容
         transcripts_text = self._get_full_transcripts(episode_id, language)
 
-        # 3. 一次调用生成3个角度的文案
-        angle_copies = self._call_llm_for_multi_angle_content(
-            episode, key_quotes, transcripts_text
-        )
-
-        return angle_copies
+        # 3. 一次调用生成3个角度的文案（@ai_retry 会重试 schema 验证失败等）
+        try:
+            angle_copies = self._call_llm_for_multi_angle_content(
+                episode, key_quotes, transcripts_text
+            )
+            return angle_copies
+        except Exception as e:
+            logger.exception(f"AI 调用失败（重试已耗尽）: {e}，使用章节小结兜底")
+            return self._generate_fallback_multi_angle_copy(episode, key_quotes)
 
     @ai_retry(max_retries=2, initial_delay=1.0, retry_on=(ValueError, Exception))
     def _call_llm_for_multi_angle_content(
@@ -616,26 +619,20 @@ class MarketingService:
             f"{len(system_prompt) + len(user_prompt)} 字符"
         )
 
-        try:
-            # 获取支持结构化输出的 LLM
-            structured_llm = self.structured_llm.with_structured_output(
-                schema=MultiAngleMarketingResponse
-            )
+        # 获取支持结构化输出的 LLM
+        structured_llm = self.structured_llm.with_structured_output(
+            schema=MultiAngleMarketingResponse
+        )
 
-            # 调用 AI - 验证失败会抛出 ValueError，触发 @ai_retry
-            result: MultiAngleMarketingResponse = structured_llm.invoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_prompt)
-            ])
+        # 调用 AI - schema 验证失败会抛出异常，由 @ai_retry 重试
+        result: MultiAngleMarketingResponse = structured_llm.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ])
 
-            # 转换为 MarketingCopy 列表
-            return self._convert_structured_response_to_marketing_copy(
-                result, episode.id
-            )
-
-        except Exception as e:
-            logger.exception(f"AI 调用失败: {e}，使用章节小结兜底")
-            return self._generate_fallback_multi_angle_copy(episode, key_quotes)
+        return self._convert_structured_response_to_marketing_copy(
+            result, episode.id
+        )
 
     def _convert_structured_response_to_marketing_copy(
         self,
