@@ -77,13 +77,19 @@ class WorkflowPublisher:
         self.publishers["ima"] = ImaPublisher()
         self.publishers["marketing"] = MarketingPublisher()
 
-    def publish_workflow(self, episode_id: int, language_code: str = "zh") -> Episode:
+    def publish_workflow(
+        self,
+        episode_id: int,
+        language_code: str = "zh",
+        force_remarketing: bool = False,
+    ) -> Episode:
         """
         Execute the complete publish workflow.
 
         Args:
             episode_id: Episode ID
             language_code: 翻译语言代码，默认 "zh"
+            force_remarketing: 若为 True，先删除旧营销文案再重新生成
 
         Returns:
             Updated Episode with PUBLISHED status
@@ -106,7 +112,7 @@ class WorkflowPublisher:
 
         # Step 1: Generate marketing content
         self.console.print("[cyan]步骤 1/2: 生成营销文案...[/cyan]")
-        posts = self.generate_marketing(episode)
+        posts = self.generate_marketing(episode, force_remarketing=force_remarketing)
 
         if posts:
             self.console.print(f"  生成 {len(posts)} 条营销文案")
@@ -189,12 +195,13 @@ class WorkflowPublisher:
         self.db.commit()
         return diffs
 
-    def generate_marketing(self, episode: Episode) -> List[MarketingPost]:
+    def generate_marketing(self, episode: Episode, force_remarketing: bool = False) -> List[MarketingPost]:
         """
         Generate marketing content for episode.
 
         Args:
             episode: Episode to process
+            force_remarketing: 若为 True，先删除该 episode 已有营销文案再重新生成
 
         Returns:
             List of MarketingPost objects
@@ -203,13 +210,17 @@ class WorkflowPublisher:
             self.console.print("  [yellow]警告: 未配置 LLM，跳过营销文案生成[/yellow]")
             return []
 
+        if force_remarketing:
+            deleted = self.marketing_service.delete_marketing_posts_for_episode(episode.id)
+            self.console.print(f"  [yellow]强制重新生成: 已清除 {deleted} 条旧营销文案[/yellow]")
+
         # Generate multi-angle marketing copies
         copies = self.marketing_service.generate_xiaohongshu_copy_multi_angle(episode.id)
 
         # Save each copy as a MarketingPost
         posts = []
         for i, copy in enumerate(copies):
-            angle_tag = copy.metadata.get("angle_name", f"angle_{i+1}")
+            angle_tag = copy.metadata.get("angle_tag", copy.metadata.get("angle_name", f"angle_{i+1}"))
             post = self.marketing_service.save_marketing_copy(
                 episode.id, copy, platform="xhs", angle_tag=angle_tag
             )

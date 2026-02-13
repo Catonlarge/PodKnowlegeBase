@@ -429,8 +429,12 @@ class CompleteWorkflowTester:
         )
         self.console.print(f"原始文档差异检测: {len(diffs)} 个修改")
 
-    def generate_marketing_doc(self) -> Optional[Path]:
-        """Step 7: 生成营销文案（3个不同角度）"""
+    def generate_marketing_doc(self, force_remarketing: bool = False) -> Optional[Path]:
+        """Step 7: 生成营销文案（3个不同角度）
+
+        Args:
+            force_remarketing: 若为 True，先删除该 episode 已有营销文案再重新生成
+        """
         self.console.print()
         self.console.print("[bold cyan]Step 7: 生成营销文案 (3个角度)[/bold cyan]")
         self.console.print("-" * 60)
@@ -438,6 +442,10 @@ class CompleteWorkflowTester:
         try:
             # 创建营销服务
             service = MarketingService(self.db)
+
+            if force_remarketing:
+                deleted = service.delete_marketing_posts_for_episode(self.episode.id)
+                self.console.print(f"[yellow]强制重新生成: 已清除 {deleted} 条旧营销文案[/yellow]")
 
             # 生成营销文案（3个不同角度）
             self.console.print(f"生成营销文案: {self.episode.title}")
@@ -505,7 +513,9 @@ class CompleteWorkflowTester:
         skip_proofreading: bool = False,
         skip_marketing: bool = False,
         skip_notion: bool = False,
-        force_resegment: bool = False
+        force_resegment: bool = False,
+        force_remarketing: bool = False,
+        only_marketing: bool = False,
     ) -> Episode:
         """运行完整工作流
 
@@ -515,10 +525,14 @@ class CompleteWorkflowTester:
             skip_proofreading: 跳过字幕校对
             skip_marketing: 跳过营销文案生成
             skip_notion: 跳过 Notion 发布
-            force_resegment: 强制重新切分（清除旧章节并重新调用 AI，与 preview 脚本行为一致）
+            force_resegment: 强制重新切分（清除旧章节并重新调用 AI）
+            force_remarketing: 强制重新生成营销文案（先删除旧文案再生成）
+            only_marketing: 仅运行营销文案步骤（需配合 episode_id，跳过转录/校对/切分/翻译/Notion）
         """
         if not audio_path and not episode_id:
             raise ValueError("必须提供 audio_path 或 episode_id")
+        if only_marketing and not episode_id:
+            raise ValueError("--only-marketing 必须配合 --episode-id 使用")
 
         # 检查环境
         if not self.check_environment():
@@ -529,6 +543,14 @@ class CompleteWorkflowTester:
             self.load_episode_by_id(episode_id)
         else:
             self.create_episode_from_audio(audio_path)
+
+        if only_marketing:
+            self.console.print("[yellow]仅重新生成营销文案[/yellow]")
+            obsidian_svc = ObsidianService(self.db)
+            obsidian_path = obsidian_svc._get_episode_path(self.episode.id)
+            marketing_path = self.generate_marketing_doc(force_remarketing=True)
+            self._display_summary(obsidian_path, marketing_path, None)
+            return self.episode
 
         # Step 2: 转录
         self.transcribe_audio()
@@ -555,7 +577,7 @@ class CompleteWorkflowTester:
         # Step 8: 生成营销文案（可选）
         marketing_path = None
         if not skip_marketing:
-            marketing_path = self.generate_marketing_doc()
+            marketing_path = self.generate_marketing_doc(force_remarketing=force_remarketing)
 
         # Step 9: 发布到 Notion（可选）
         notion_url = None
@@ -635,7 +657,11 @@ def main():
     parser.add_argument("--skip-notion", action="store_true", help="跳过 Notion 发布")
     parser.add_argument("--test-db", action="store_true", help="使用测试数据库")
     parser.add_argument("--force-resegment", action="store_true",
-                        help="强制重新切分（清除旧章节并重新调用 AI，与 preview 脚本行为一致）")
+                        help="强制重新切分（清除旧章节并重新调用 AI）")
+    parser.add_argument("--force-remarketing", action="store_true",
+                        help="强制重新生成营销文案（先删除数据库旧文案再生成）")
+    parser.add_argument("--only-marketing", action="store_true",
+                        help="仅运行营销文案步骤（需配合 --episode-id，跳过转录/校对/切分/翻译/Notion）")
 
     args = parser.parse_args()
 
@@ -645,6 +671,8 @@ def main():
 
     if args.audio and args.episode_id:
         parser.error("audio 和 --episode-id 不能同时使用")
+    if args.only_marketing and not args.episode_id:
+        parser.error("--only-marketing 必须配合 --episode-id 使用")
 
     console = Console()
 
@@ -701,6 +729,8 @@ def main():
                 skip_marketing=args.skip_marketing,
                 skip_notion=args.skip_notion,
                 force_resegment=args.force_resegment,
+                force_remarketing=args.force_remarketing,
+                only_marketing=args.only_marketing,
             )
 
             return 0

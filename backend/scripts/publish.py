@@ -38,6 +38,8 @@ def main():
         """
     )
     parser.add_argument("--id", type=int, required=True, help="Episode ID")
+    parser.add_argument("--force-remarketing", action="store_true",
+                        help="强制重新生成营销文案（先删除数据库旧文案再生成）")
 
     args = parser.parse_args()
 
@@ -52,7 +54,10 @@ def main():
     with get_session() as db:
         try:
             publisher = WorkflowPublisher(db, console)
-            episode = publisher.publish_workflow(args.id)
+            episode = publisher.publish_workflow(
+                args.id,
+                force_remarketing=args.force_remarketing,
+            )
 
             console.print()
             console.print(f"[green]发布成功![/green] Episode ID: {episode.id}")

@@ -846,6 +846,25 @@ class MarketingService:
     # 文案持久化
     # ========================================================================
 
+    def delete_marketing_posts_for_episode(self, episode_id: int) -> int:
+        """
+        删除指定 Episode 的所有营销文案（用于强制重新生成前清理）
+
+        Args:
+            episode_id: Episode ID
+
+        Returns:
+            int: 删除的记录数
+        """
+        from sqlalchemy import delete
+        result = self.db.execute(
+            delete(MarketingPost).where(MarketingPost.episode_id == episode_id)
+        )
+        count = result.rowcount
+        self.db.flush()
+        logger.info(f"已删除 episode_id={episode_id} 的 {count} 条营销文案")
+        return count
+
     def save_marketing_copy(
         self,
         episode_id: int,

@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from app.services.marketing_service import MarketingService
-from app.models import Episode, Chapter, AudioSegment, TranscriptCue
+from app.models import Episode, Chapter, AudioSegment, TranscriptCue, MarketingPost
 from app.services.ai.schemas.marketing_schema import (
     MultiAngleMarketingResponse,
     MarketingAngle,
@@ -335,3 +335,118 @@ class TestMarketingRetryAndFallback:
         assert result[0].metadata.get("angle_tag") == "角度一"
         assert "fallback" not in result[0].metadata
         assert mock_invoke.call_count == 2
+
+
+class TestMarketingDeleteAndForceRemarketing:
+    """测试 MarketingService 删除旧文案与强制重新生成"""
+
+    def test_delete_marketing_posts_removes_existing_posts(self, test_session):
+        """Given: Episode 有 2 条营销文案 When: 调用 delete_marketing_posts_for_episode Then: 全部删除并返回 2"""
+        # Arrange
+        episode = Episode(
+            title="删除测试",
+            audio_path="/test/path.mp3",
+            file_hash="del_test_hash",
+            duration=300.0,
+            workflow_status=WorkflowStatus.TRANSLATED.value,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        post1 = MarketingPost(
+            episode_id=episode.id,
+            platform="xhs",
+            angle_tag="角度1",
+            title="标题1",
+            content="内容1",
+        )
+        post2 = MarketingPost(
+            episode_id=episode.id,
+            platform="xhs",
+            angle_tag="角度2",
+            title="标题2",
+            content="内容2",
+        )
+        test_session.add_all([post1, post2])
+        test_session.flush()
+
+        service = MarketingService(
+            test_session, provider="moonshot", api_key="test_key"
+        )
+
+        # Act
+        count = service.delete_marketing_posts_for_episode(episode.id)
+        test_session.commit()
+
+        # Assert
+        assert count == 2
+        remaining = test_session.query(MarketingPost).filter(
+            MarketingPost.episode_id == episode.id
+        ).count()
+        assert remaining == 0
+
+    def test_delete_marketing_posts_returns_zero_when_no_posts(self, test_session):
+        """Given: Episode 无营销文案 When: 调用 delete_marketing_posts_for_episode Then: 返回 0"""
+        # Arrange
+        episode = Episode(
+            title="无文案测试",
+            audio_path="/test/path.mp3",
+            file_hash="no_post_hash",
+            duration=300.0,
+            workflow_status=WorkflowStatus.TRANSLATED.value,
+        )
+        test_session.add(episode)
+        test_session.flush()
+
+        service = MarketingService(
+            test_session, provider="moonshot", api_key="test_key"
+        )
+
+        # Act
+        count = service.delete_marketing_posts_for_episode(episode.id)
+
+        # Assert
+        assert count == 0
+
+    def test_delete_marketing_posts_does_not_affect_other_episodes(self, test_session):
+        """Given: Episode A 有文案，Episode B 无文案 When: 删除 A 的文案 Then: B 不受影响"""
+        # Arrange
+        ep_a = Episode(
+            title="A",
+            audio_path="/a.mp3",
+            file_hash="hash_a",
+            duration=300.0,
+            workflow_status=WorkflowStatus.TRANSLATED.value,
+        )
+        ep_b = Episode(
+            title="B",
+            audio_path="/b.mp3",
+            file_hash="hash_b",
+            duration=300.0,
+            workflow_status=WorkflowStatus.TRANSLATED.value,
+        )
+        test_session.add_all([ep_a, ep_b])
+        test_session.flush()
+
+        post_b = MarketingPost(
+            episode_id=ep_b.id,
+            platform="xhs",
+            angle_tag="B角度",
+            title="B标题",
+            content="B内容",
+        )
+        test_session.add(post_b)
+        test_session.flush()
+
+        service = MarketingService(
+            test_session, provider="moonshot", api_key="test_key"
+        )
+
+        # Act
+        service.delete_marketing_posts_for_episode(ep_a.id)
+        test_session.commit()
+
+        # Assert
+        post_b_after = test_session.get(MarketingPost, post_b.id)
+        assert post_b_after is not None
+        assert post_b_after.episode_id == ep_b.id

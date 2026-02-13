@@ -20,7 +20,7 @@ class MarketingAngle(BaseModel):
     """
 
     angle_name: str = Field(..., min_length=2, max_length=20, description="营销角度名称")
-    title: str = Field(..., min_length=5, max_length=30, description="标题")
+    title: str = Field(..., min_length=5, max_length=60, description="标题（建议30字以内，允许最多60字）")
     content: str = Field(..., min_length=200, max_length=800, description="正文内容")
     hashtags: List[str] = Field(..., min_length=3, max_length=10, description="标签列表")
 
