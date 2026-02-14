@@ -1165,7 +1165,7 @@ class TranslationService:
                 item_lower = item.original_text.lower().strip()
 
                 ratio = SequenceMatcher(None, original_lower, item_lower).ratio()
-                if ratio >= 0.95:
+                if ratio >= 0.92:
                     logger.warning(
                         f"original_text 轻微差异已接受 (相似度 {ratio:.2f}): cue_id={item.cue_id}\n"
                         f"  期望: '{original_text[:60]}...'\n"
