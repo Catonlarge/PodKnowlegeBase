@@ -234,9 +234,11 @@ def download_episode(episode: Episode, db: Session) -> Episode:
         Updated Episode with DOWNLOADED status
     """
     service = DownloadService(db)
-    audio_path = service.download(episode.source_url)
+    local_path, metadata = service.download(episode.source_url)
 
-    episode.audio_path = audio_path
+    episode.audio_path = local_path
+    episode.title = metadata.get("title") or episode.title or "Unknown Title"
+    episode.duration = metadata.get("duration") or episode.duration or 0
     episode.workflow_status = WorkflowStatus.DOWNLOADED
     db.commit()
 

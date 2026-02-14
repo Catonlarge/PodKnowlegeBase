@@ -379,6 +379,17 @@ D:\programming_enviroment\EnglishPod-knowledgeBase\
 
 ## 常见问题
 
+### Q: 如何激活虚拟环境？
+
+所有 CLI 脚本需在 **backend 目录下、已激活 venv-kb** 后执行：
+
+```powershell
+cd D:\programming_enviroment\EnglishPod-knowledgeBase\backend
+venv-kb\Scripts\Activate.ps1
+```
+
+激活成功后，命令行前会显示 `(venv-kb)`。之后即可运行 `python scripts/xxx.py`。
+
 ### Q: 如何查看所有 Episode 的状态？
 
 ```powershell
