@@ -359,13 +359,13 @@ class TestStepFunctions:
         test_session.commit()
 
         mock_service = Mock()
-        mock_service.render_episode.return_value = "# Test Episode\n\nContent..."
+        mock_service.save_episode.return_value = Mock()
         mock_service_cls.return_value = mock_service
 
         result = generate_obsidian_doc(sample_episode, test_session)
 
         assert result.workflow_status == WorkflowStatus.READY_FOR_REVIEW
-        mock_service.render_episode.assert_called_once()
+        mock_service.save_episode.assert_called_once_with(sample_episode.id, language_code="zh")
 
     @patch('app.workflows.runner.ObsidianService')
     def test_generate_obsidian_doc_keeps_segmented_when_translation_incomplete(
@@ -380,10 +380,10 @@ class TestStepFunctions:
         test_session.commit()
 
         mock_service = Mock()
-        mock_service.render_episode.return_value = "# Test Episode\n\nContent..."
+        mock_service.save_episode.return_value = Mock()
         mock_service_cls.return_value = mock_service
 
         result = generate_obsidian_doc(sample_episode, test_session)
 
         assert result.workflow_status == WorkflowStatus.SEGMENTED
-        mock_service.render_episode.assert_called_once()
+        mock_service.save_episode.assert_called_once_with(sample_episode.id, language_code="zh")

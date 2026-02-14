@@ -5,6 +5,8 @@ Orchestrates the complete workflow from YouTube URL to Obsidian document.
 Supports checkpoint resume and progress visualization.
 """
 import hashlib
+import os
+import re
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -22,6 +24,7 @@ from app.workflows.state_machine import (
 )
 from app.services.download_service import DownloadService
 from app.services.transcription_service import TranscriptionService
+from app.services.whisper.whisper_service import WhisperService
 from app.services.subtitle_proofreading_service import SubtitleProofreadingService
 from app.services.segmentation_service import SegmentationService
 from app.services.translation_service import TranslationService
@@ -41,25 +44,56 @@ def calculate_url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()
 
 
+def extract_video_id(url: str) -> Optional[str]:
+    """
+    Extract canonical video ID from URL for deduplication.
+
+    Same video with different query params (e.g. Bilibili spm_id_from, YouTube &t=)
+    should resolve to the same episode.
+
+    Returns:
+        Video ID string (e.g. BV17ycez5EAQ, dQw4w9WgXcQ) or None
+    """
+    if not url:
+        return None
+    patterns = [
+        r"bilibili\.com/video/([a-zA-Z0-9]+)",
+        r"(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})",
+        r"youtube\.com/embed/([a-zA-Z0-9_-]{11})",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+
 def create_or_get_episode(db: Session, url: str, force_restart: bool = False) -> Episode:
     """
     Create new episode or get existing one by URL.
 
+    Deduplication: same video with different URL formats (query params) finds same episode.
+
     Args:
         db: Database session
-        url: YouTube URL
+        url: YouTube/Bilibili URL
         force_restart: If True, reset status to INIT
 
     Returns:
         Episode object
     """
-    # Use local calculate_url_hash function
     file_hash = calculate_url_hash(url)
 
-    # Try to find existing episode
-    episode = db.query(Episode).filter(
-        Episode.file_hash == file_hash
-    ).first()
+    # 1. Try by exact URL hash
+    episode = db.query(Episode).filter(Episode.file_hash == file_hash).first()
+
+    # 2. Fallback: same video, different URL (e.g. Bilibili with/without query params)
+    if not episode:
+        video_id = extract_video_id(url)
+        if video_id:
+            episode = db.query(Episode).filter(
+                Episode.source_url.like(f"%{video_id}%")
+            ).first()
 
     if episode:
         if force_restart:
@@ -153,6 +187,14 @@ class WorkflowRunner:
             # Refresh from database
             self.db.refresh(episode)
 
+        # 断点续传补全：状态已是 READY_FOR_REVIEW 但 Obsidian 文件不存在时（如旧 bug 导致），补生成
+        status_val = episode.workflow_status if isinstance(episode.workflow_status, int) else episode.workflow_status.value
+        if status_val >= WorkflowStatus.READY_FOR_REVIEW.value:
+            obsidian_path = ObsidianService(self.db)._get_episode_path(episode.id)
+            if not obsidian_path.exists():
+                self.console.print("[yellow]检测到 Obsidian 文档缺失，补生成...[/yellow]")
+                ObsidianService(self.db).save_episode(episode.id, language_code="zh")
+
         return episode
 
     def _run_step(self, step_func: StepFunction, episode: Episode) -> Episode:
@@ -226,6 +268,8 @@ def download_episode(episode: Episode, db: Session) -> Episode:
     """
     Download audio file for episode.
 
+    Supports resume: if audio_path exists and file exists, skip download.
+
     Args:
         episode: Episode to process
         db: Database session
@@ -233,6 +277,18 @@ def download_episode(episode: Episode, db: Session) -> Episode:
     Returns:
         Updated Episode with DOWNLOADED status
     """
+    # 断点续传：文件已存在则跳过下载
+    if episode.audio_path and os.path.exists(episode.audio_path):
+        from app.utils.file_utils import get_audio_duration
+
+        try:
+            episode.duration = get_audio_duration(episode.audio_path)
+        except Exception:
+            pass
+        episode.workflow_status = WorkflowStatus.DOWNLOADED
+        db.commit()
+        return episode
+
     service = DownloadService(db)
     local_path, metadata = service.download(episode.source_url)
 
@@ -256,7 +312,9 @@ def transcribe_episode(episode: Episode, db: Session) -> Episode:
     Returns:
         Updated Episode with TRANSCRIBED status
     """
-    service = TranscriptionService(db)
+    WhisperService.load_models()
+    whisper_service = WhisperService.get_instance()
+    service = TranscriptionService(db, whisper_service)
     service.segment_and_transcribe(episode.id)
 
     episode.workflow_status = WorkflowStatus.TRANSCRIBED
@@ -342,7 +400,7 @@ def generate_obsidian_doc(episode: Episode, db: Session) -> Episode:
         Updated Episode (READY_FOR_REVIEW if translation complete)
     """
     service = ObsidianService(db)
-    service.render_episode(episode.id)
+    service.save_episode(episode.id, language_code="zh")
 
     if episode.workflow_status >= WorkflowStatus.TRANSLATED.value:
         episode.workflow_status = WorkflowStatus.READY_FOR_REVIEW

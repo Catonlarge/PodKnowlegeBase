@@ -106,8 +106,19 @@ class DownloadService:
         filename = self._generate_filename(url, metadata.get("title", "audio"))
         output_path = str(self.storage_path / filename)
 
-        # Download with retry
-        self._download_with_retry(url, output_path, max_retries, base_delay)
+        # 断点续传：文件已存在则跳过下载
+        possible_paths = [
+            output_path,
+            output_path.rsplit(".", 1)[0] + ".mp3",
+            output_path.rsplit(".", 1)[0] + ".m4a",
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                output_path = path
+                logger.info(f"[DownloadService] 文件已存在，跳过下载: {path}")
+                break
+        else:
+            self._download_with_retry(url, output_path, max_retries, base_delay)
 
         # Get actual duration from downloaded file
         try:

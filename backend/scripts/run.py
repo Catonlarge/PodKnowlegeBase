@@ -52,6 +52,7 @@ if args.cookiefile:
     os.environ["YT_DLP_COOKIEFILE"] = os.path.abspath(args.cookiefile)
 
 from app.database import get_session
+from app.enums.workflow_status import WorkflowStatus
 from app.workflows.runner import WorkflowRunner
 from rich.console import Console
 
@@ -86,7 +87,8 @@ def main():
 
             console.print()
             console.print(f"[green]成功![/green] Episode ID: {episode.id}")
-            console.print(f"[dim]状态: {episode.workflow_status.label}[/dim]")
+            status = WorkflowStatus(episode.workflow_status) if isinstance(episode.workflow_status, int) else episode.workflow_status
+            console.print(f"[dim]状态: {status.label}[/dim]")
             console.print()
 
             return 0

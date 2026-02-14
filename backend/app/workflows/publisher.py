@@ -4,6 +4,7 @@ Publish Workflow Orchestrator
 Parses Obsidian document edits and publishes to multiple platforms.
 """
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
@@ -101,27 +102,50 @@ class WorkflowPublisher:
         if not episode:
             raise ValueError(f"Episode not found: id={episode_id}")
 
-        # 只允许从 APPROVED 状态发布
+        # 只允许从 APPROVED 状态发布；若为 READY_FOR_REVIEW 则先尝试同步 Obsidian 审核状态
         if episode.workflow_status != WorkflowStatus.APPROVED.value:
-            current_status = WorkflowStatus(episode.workflow_status)
-            raise ValueError(
-                f"Episode 状态为 {current_status.label}，"
-                f"预期状态为 {WorkflowStatus.APPROVED.label}。"
-                f"请先在 Obsidian 中审核并运行 sync_review_status.py"
-            )
+            if episode.workflow_status == WorkflowStatus.READY_FOR_REVIEW.value:
+                self.console.print("[yellow]检测到待审核状态，先同步 Obsidian 审核状态...[/yellow]")
+                from app.services.review_service import ReviewService
+                review_service = ReviewService(self.db)
+                count = review_service.sync_approved_episodes()
+                self.db.refresh(episode)
+                if count > 0:
+                    self.console.print(f"[green]已同步 {count} 个已审核 Episode[/green]")
+
+            if episode.workflow_status != WorkflowStatus.APPROVED.value:
+                current_status = WorkflowStatus(episode.workflow_status)
+                raise ValueError(
+                    f"Episode 状态为 {current_status.label}，"
+                    f"预期状态为 {WorkflowStatus.APPROVED.label}。"
+                    f"请先在 Obsidian 中将 status 改为 approved 后重试，或运行 sync_review_status.py"
+                )
 
         # Step 1: Generate marketing content
-        self.console.print("[cyan]步骤 1/2: 生成营销文案...[/cyan]")
+        self.console.print("[cyan]步骤 1/3: 生成营销文案...[/cyan]")
         posts = self.generate_marketing(episode, force_remarketing=force_remarketing)
 
         if posts:
             self.console.print(f"  生成 {len(posts)} 条营销文案")
             self._display_marketing_summary(posts)
+
+            # 导出到 Obsidian 供审核（参考 test_complete_workflow）
+            self.console.print("[cyan]步骤 2/3: 导出营销文案到 Obsidian...[/cyan]")
+            from app.services.obsidian_service import ObsidianService
+            obsidian_service = ObsidianService(self.db)
+            try:
+                marketing_path = obsidian_service.save_marketing_posts(episode.id)
+                if marketing_path:
+                    self.console.print(f"  [green]已导出: {marketing_path}[/green]")
+                else:
+                    self.console.print("  [yellow]无营销文案可导出[/yellow]")
+            except Exception as e:
+                self.console.print(f"  [yellow]导出失败: {e}[/yellow]")
         else:
             self.console.print("  未生成营销文案")
 
-        # Step 2: Distribute to platforms
-        self.console.print("[cyan]步骤 2/2: 分发到各平台...[/cyan]")
+        # Step 3: Distribute to platforms
+        self.console.print("[cyan]步骤 3/3: 分发到各平台...[/cyan]")
         records = self.distribute_to_platforms(episode, posts)
 
         self._display_publication_summary(records)
@@ -235,6 +259,46 @@ class WorkflowPublisher:
             posts.append(post)
 
         return posts
+
+    def export_marketing_only(
+        self,
+        episode_id: int,
+        force_remarketing: bool = False,
+    ) -> Optional[Path]:
+        """
+        仅生成并导出营销文案到 Obsidian，不发布到任何平台。
+
+        Args:
+            episode_id: Episode ID
+            force_remarketing: 若为 True，先删除旧文案再重新生成
+
+        Returns:
+            Path: 导出的文件路径，失败返回 None
+        """
+        episode = self.db.get(Episode, episode_id)
+        if not episode:
+            raise ValueError(f"Episode not found: id={episode_id}")
+
+        self.console.print("[cyan]生成营销文案...[/cyan]")
+        posts = self.generate_marketing(episode, force_remarketing=force_remarketing)
+
+        if not posts:
+            self.console.print("[yellow]无营销文案可导出[/yellow]")
+            return None
+
+        self.console.print(f"  共 {len(posts)} 条")
+        self.console.print("[cyan]导出到 Obsidian...[/cyan]")
+
+        from app.services.obsidian_service import ObsidianService
+        obsidian_service = ObsidianService(self.db)
+        try:
+            path = obsidian_service.save_marketing_posts(episode_id)
+            if path:
+                self.console.print(f"  [green]已导出: {path}[/green]")
+            return path
+        except Exception as e:
+            self.console.print(f"  [red]导出失败: {e}[/red]")
+            return None
 
     def distribute_to_platforms(
         self,
