@@ -1,21 +1,20 @@
 r"""
-使用真实英文文本测试 TranslationService
+使用真实英文文本或 SRT 字幕测试 TranslationService
 
 使用方法：
 1. 激活虚拟环境: D:\programming_enviroment\EnglishPod-knowledgeBase\backend\venv-kb\Scripts\Activate.ps1
 2. 设置环境变量: $env:MOONSHOT_API_KEY="your_api_key"
-3. 运行脚本: python scripts/test_translation_with_file.py "path/to/english_transcript.txt"
+3. 运行脚本: python scripts/test_translation_with_file.py "path/to/file.txt"
+   或: python scripts/test_translation_with_file.py "path/to/subtitles.srt"
 
 说明：
-- 此脚本读取英文文本文件并创建模拟数据进行翻译测试
-- 文本会被分割成句子并模拟时间戳
+- 支持 .txt（纯文本）和 .srt（字幕）格式
 - 使用真实 AI 服务进行翻译
 """
 import os
 import sys
 import re
 from pathlib import Path
-from unittest.mock import Mock
 
 # 设置临时环境变量
 os.environ.setdefault("HF_TOKEN", "dummy_token_for_translation_test")
@@ -28,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.database import get_session
 from app.services.translation_service import TranslationService
-from app.services.ai.ai_service import AIService
 from app.models import Episode, AudioSegment, TranscriptCue, Translation
 from app.enums.workflow_status import WorkflowStatus
 from app.enums.translation_status import TranslationStatus
@@ -120,11 +118,90 @@ def create_episode_from_text(db, text: str, title: str = "AI Translation Test") 
     return episode
 
 
+def parse_srt_file(file_path: str) -> list:
+    """
+    解析 SRT 字幕文件
+
+    Returns:
+        List[dict]: [{"start_time": float, "end_time": float, "speaker": str, "text": str}]
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    pattern = r"(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.*?)(?=\n\n|\n*$)"
+    matches = re.findall(pattern, content, re.DOTALL)
+
+    def time_to_seconds(time_str: str) -> float:
+        h, m, s_ms = time_str.split(":")
+        s, ms = s_ms.split(",")
+        return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000
+
+    cues = []
+    for match in matches:
+        start_time = time_to_seconds(match[1])
+        end_time = time_to_seconds(match[2])
+        text = match[3].strip()
+        speaker = "Unknown"
+        if text.startswith("["):
+            match_speaker = re.match(r"\[(.*?)\]", text)
+            if match_speaker:
+                speaker = match_speaker.group(1)
+                text = re.sub(r"\[.*?\]\s*", "", text)
+        cues.append({"start_time": start_time, "end_time": end_time, "speaker": speaker, "text": text})
+    return cues
+
+
+def create_episode_from_srt(db, srt_path: str, title: str = "SRT Translation Test") -> Episode:
+    """从 SRT 文件创建 Episode 和 TranscriptCue"""
+    cues_data = parse_srt_file(srt_path)
+    if not cues_data:
+        raise ValueError(f"SRT 文件解析失败或为空: {srt_path}")
+
+    total_duration = cues_data[-1]["end_time"]
+    episode = Episode(
+        title=title,
+        file_hash=f"srt_{hash(str(total_duration)) % 1000000}",
+        duration=float(total_duration),
+        workflow_status=WorkflowStatus.SEGMENTED.value
+    )
+    db.add(episode)
+    db.flush()
+
+    segment = AudioSegment(
+        episode_id=episode.id,
+        segment_index=0,
+        segment_id="segment_001",
+        start_time=0.0,
+        end_time=float(total_duration),
+        status="completed"
+    )
+    db.add(segment)
+    db.flush()
+
+    for cue_data in cues_data:
+        cue = TranscriptCue(
+            segment_id=segment.id,
+            start_time=float(cue_data["start_time"]),
+            end_time=float(cue_data["end_time"]),
+            speaker=cue_data["speaker"],
+            text=cue_data["text"][:500]
+        )
+        db.add(cue)
+    db.flush()
+
+    print(f"创建 Episode: {title}")
+    print(f"  Cue 数量: {len(cues_data)}")
+    print(f"  时长: {total_duration:.0f} 秒 ({total_duration/60:.1f} 分钟)")
+    return episode
+
+
 def main():
+    default_srt = Path(r"D:\programming_enviroment\learning-EnglishPod3\docs\016_analysis\016_subtitles_original.srt")
     if len(sys.argv) < 2:
-        print("使用方法: python scripts/test_translation_with_file.py <英文文本文件路径>")
-        print("\n默认使用测试文件...")
-        text_file = Path(r"D:\programming_enviroment\learning-EnglishPod3\docs\018_analysis\018_fulltext.txt")
+        print("使用方法: python scripts/test_translation_with_file.py <文件路径>")
+        print("  支持 .txt 或 .srt 格式")
+        print(f"\n默认使用: {default_srt.name}")
+        text_file = default_srt
     else:
         text_file = Path(sys.argv[1])
 
@@ -133,73 +210,39 @@ def main():
         return
 
     print("=" * 70)
-    print("使用真实英文文本进行翻译测试")
+    print("TranslationService 翻译测试")
     print("=" * 70)
     print(f"文件路径: {text_file}")
     print(f"文件大小: {text_file.stat().st_size / 1024:.1f} KB")
     print()
 
-    # 读取文件
-    print("读取文件内容...")
-    with open(text_file, 'r', encoding='utf-8') as f:
-        text_content = f.read()
-
-    # 限制内容长度（避免太长）
-    max_chars = 3000  # 限制句子数量用于测试
-    if len(text_content) > max_chars:
-        print(f"文件过长 ({len(text_content)} 字符)，截取前 {max_chars} 字符")
-        text_content = text_content[:max_chars]
-
-    # 检查是否使用真实 AI 服务
-    FORCE_USE_MOCK = False
-
-    if FORCE_USE_MOCK:
-        print("\n使用 Mock 模式（模拟 AI 翻译响应）")
-        print("如需真实翻译，将脚本中的 FORCE_USE_MOCK 改为 False\n")
-
-        # 创建 Mock AI 服务
-        mock_ai = Mock()
-        mock_ai.provider = "mock"
-
-        def mock_query_side_effect(prompt):
-            """返回模拟翻译"""
-            # 从 prompt 中提取英文文本
-            match = re.search(r'\*\*英文：\*\*\s*\n?(.+)', prompt, re.DOTALL)
-            if match:
-                english_text = match.group(1).strip()[:50]
-                return {
-                    "type": "sentence",
-                    "content": {"translation": f"[模拟翻译] {english_text}..."}
-                }
-            return {
-                "type": "sentence",
-                "content": {"translation": "[模拟翻译]"}
-            }
-
-        mock_ai.query = Mock(side_effect=mock_query_side_effect)
-        ai_service = mock_ai
-        print(f"AI 服务提供商: {ai_service.provider} (Mock)")
-    else:
-        print(f"\n使用真实 AI 服务: Moonshot\n")
-        ai_service = AIService(provider="moonshot")
-        print(f"AI 服务提供商: {ai_service.provider}")
+    is_srt = text_file.suffix.lower() == ".srt"
 
     # 创建数据库会话
     with get_session() as db:
         try:
-            # 从文本创建 Episode
             print("-" * 70)
-            episode = create_episode_from_text(
-                db,
-                text_content,
-                title=f"Translation Test: {text_file.stem}"
-            )
+            if is_srt:
+                episode = create_episode_from_srt(
+                    db, str(text_file), title=f"Translation Test: {text_file.stem}"
+                )
+            else:
+                print("读取文件内容...")
+                with open(text_file, 'r', encoding='utf-8') as f:
+                    text_content = f.read()
+                max_chars = 3000
+                if len(text_content) > max_chars:
+                    print(f"文件过长，截取前 {max_chars} 字符")
+                    text_content = text_content[:max_chars]
+                episode = create_episode_from_text(
+                    db, text_content, title=f"Translation Test: {text_file.stem}"
+                )
             print("-" * 70)
 
-            # 创建翻译服务
-            print("\n开始批量翻译...")
+            # 创建翻译服务（使用 Moonshot）
+            print("\n开始批量翻译 (provider=moonshot)...")
             print("-" * 70)
-            service = TranslationService(db, ai_service)
+            service = TranslationService(db, provider="moonshot")
 
             # 执行批量翻译
             count = service.batch_translate(episode.id, language_code="zh")
