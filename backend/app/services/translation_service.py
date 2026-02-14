@@ -13,7 +13,6 @@ Migrated to use StructuredLLM with Pydantic validation and retry logic.
 import json
 import logging
 from difflib import SequenceMatcher
-import random
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -178,12 +177,12 @@ class TranslationService:
         Returns:
             int: 成功翻译的 Cue 数量
         """
-        logger.info(f"[DEBUG] batch_translate ENTRY: episode_id={episode_id}, language_code={language_code}")
+        logger.info(f"batch_translate ENTRY: episode_id={episode_id}, language_code={language_code}")
         logger.info(f"开始批量翻译: episode_id={episode_id}, language_code={language_code}")
 
         # 获取待翻译的 Cue 列表（断点续传）
         pending_cues = self._get_pending_cues(episode_id, language_code)
-        logger.info(f"[DEBUG] _get_pending_cues returned: {len(pending_cues)} cues")
+        logger.info(f"_get_pending_cues returned: {len(pending_cues)} cues")
 
         if not pending_cues:
             logger.info(f"没有待翻译的 Cue: episode_id={episode_id}, language_code={language_code}")
@@ -223,7 +222,7 @@ class TranslationService:
         current_config_index = 0  # 当前使用的配置索引
         collector: List[TranscriptCue] = []  # 校验失败的 cue 收集器，凑批后滚动重试
 
-        logger.info(f"[DEBUG] _batch_translate_with_degradation ENTRY: total_cues={total_cues}")
+        logger.info(f"_batch_translate_with_degradation ENTRY: total_cues={total_cues}")
 
         # 遍历所有 Cue，按当前批次大小处理
         i = 0
@@ -236,7 +235,7 @@ class TranslationService:
             batch = cues[i:i + batch_size]
 
             logger.info(
-                f"[DEBUG] 批次 #{batch_num}: Cue {i+1}-{i+batch_size}/{total_cues}, "
+                f"批次 #{batch_num}: Cue {i+1}-{i+batch_size}/{total_cues}, "
                 f"batch_size={batch_size}, config_index={current_config_index}"
             )
             logger.info(
@@ -245,11 +244,11 @@ class TranslationService:
             )
 
             # 尝试翻译当前批次（带重试）
-            logger.info(f"[DEBUG] 批次 #{batch_num}: 调用 _try_translate_batch_with_retry 前")
+            logger.info(f"批次 #{batch_num}: 调用 _try_translate_batch_with_retry 前")
             success, saved_count, failed_cues = self._try_translate_batch_with_retry(
                 batch, language_code, config
             )
-            logger.info(f"[DEBUG] 批次 #{batch_num}: _try_translate_batch_with_retry 返回 success={success}, saved_count={saved_count}, failed={len(failed_cues)}")
+            logger.info(f"批次 #{batch_num}: _try_translate_batch_with_retry 返回 success={success}, saved_count={saved_count}, failed={len(failed_cues)}")
 
             # 通过的保存，失败的收集供后续滚动重试
             success_count += saved_count
@@ -330,7 +329,7 @@ class TranslationService:
                 )
 
                 # 调用 AI 批量翻译
-                logger.info(f"[DEBUG] _try_translate_batch_with_retry: 调用 _call_ai_for_batch 前 (attempt={attempt + 1})")
+                logger.info(f"_try_translate_batch_with_retry: 调用 _call_ai_for_batch 前 (attempt={attempt + 1})")
                 result = self._call_ai_for_batch(failed_batch, language_code)
                 valid_translations = result["translations"]
                 failed_cue_ids = result.get("failed_cue_ids", [])
@@ -344,6 +343,10 @@ class TranslationService:
                     )
                     successful_ids.add(trans["cue_id"])
                     saved_count += 1
+
+                # 校验成功的立即入库，不等待失败项或下一批
+                if saved_count > 0:
+                    self.db.commit()
 
                 # 构建失败列表供收集器
                 cue_id_to_cue = {c.id: c for c in batch}
@@ -530,8 +533,8 @@ class TranslationService:
             Translation.language_code == language_code
         )
         result = self.db.execute(stmt)
-        self.db.commit()
         count = result.rowcount
+        # 不在此处 commit，由调用方提交（与 batch_translate 增量 commit 设计一致）
         logger.info(f"已删除 episode_id={episode_id} 的翻译记录: {count} 条 (language={language_code})")
         return count
 
@@ -634,6 +637,7 @@ class TranslationService:
             batch = failed_items[:BATCH_RETRY_SIZE]
             failed_items = failed_items[BATCH_RETRY_SIZE:]
 
+            round_saved = 0
             for cue, original_text in batch:
                 try:
                     # 单条调用 AI（重试）
@@ -642,18 +646,22 @@ class TranslationService:
                     # 保存成功翻译
                     self._create_translation(cue.id, language_code, translated_text)
                     success_count += 1
+                    round_saved += 1
 
                 except Exception as single_error:
                     logger.warning(f"  Cue {cue.id} 翻译失败: {single_error}，收集下一批重试")
                     failed_items.append((cue, original_text))
 
-            self.db.flush()
+            # 校验成功的立即入库，符合设计意图
+            if round_saved > 0:
+                self.db.commit()
 
         # 5轮后仍有失败项，入库 NULL
         if failed_items:
             logger.warning(f"5轮重试后仍有 {len(failed_items)} 条失败，入库NULL")
             for cue, original_text in failed_items:
                 self._create_failed_translation(cue.id, language_code, str(original_text))
+            self.db.commit()
 
         return success_count
 
@@ -1020,7 +1028,7 @@ class TranslationService:
 注意：必须返回完整的 JSON 对象，包含所有 {len(cues)} 条字幕的翻译。"""
 
         prompt_char_count = len(user_prompt)
-        logger.info(f"[DEBUG] _call_ai_for_batch ENTRY: cues={len(cues)}, prompt_chars={prompt_char_count}")
+        logger.info(f"_call_ai_for_batch ENTRY: cues={len(cues)}, prompt_chars={prompt_char_count}")
         logger.info(f"调用 AI 批量翻译 {len(cues)} 条字幕...")
 
         try:
@@ -1041,12 +1049,12 @@ class TranslationService:
             def call_llm_with_retry():
                 return structured_llm.invoke(messages)
 
-            logger.info(f"[DEBUG] _call_ai_for_batch: 即将调用 structured_llm.invoke (provider={self.provider}, timeout 见 config)")
+            logger.info(f"_call_ai_for_batch: 即将调用 structured_llm.invoke (provider={self.provider})")
             start_time = time.time()
             result: TranslationResponse = call_llm_with_retry()
             elapsed_time = time.time() - start_time
 
-            logger.info(f"[DEBUG] _call_ai_for_batch: invoke 返回，耗时 {elapsed_time:.1f}s")
+            logger.info(f"_call_ai_for_batch: invoke 返回，耗时 {elapsed_time:.1f}s")
             logger.info(f"  AI 响应完成，耗时 {elapsed_time:.1f} 秒")
 
             # 业务验证：支持部分接受，未通过的收集供重试
@@ -1061,9 +1069,8 @@ class TranslationService:
 
         except Exception as e:
             logger.error(f"AI 批量翻译调用失败: {e}")
-            # 边界处理: 清理未提交的数据，避免状态残留
-            self.db.rollback()
-            raise  # 重新抛出异常，由上层重试逻辑处理
+            # 本方法不写 DB，无未提交数据；上层 _try_translate_batch_with_retry 已对 valid 做 commit
+            raise
 
     def _validate_translation_response(
         self,
