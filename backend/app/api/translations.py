@@ -3,14 +3,12 @@ Translations API Routes
 
 翻译查询和修正端点。
 """
-from typing import Optional
-
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.config import MOONSHOT_API_KEY, MOONSHOT_BASE_URL
+from app.config import MOONSHOT_API_KEY
 from app.database import get_session
-from app.models import Episode, Translation
+from app.models import Episode, Translation, TranscriptCue, AudioSegment
 from app.schemas.translation import (
     TranslationUpdate,
     TranslationResponse,
@@ -21,14 +19,6 @@ from app.services.translation_service import TranslationService
 
 
 router = APIRouter()
-
-
-def get_llm_client():
-    """获取 LLM 客户端"""
-    if MOONSHOT_API_KEY:
-        from openai import OpenAI
-        return OpenAI(api_key=MOONSHOT_API_KEY, base_url=MOONSHOT_BASE_URL)
-    return None
 
 
 # ==================== API Endpoints ====================
@@ -109,31 +99,38 @@ async def batch_translate_episode(
         )
 
     # 检查 LLM 服务可用性
-    llm_client = get_llm_client()
-    if not llm_client:
+    if not MOONSHOT_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="LLM service not available. Please configure MOONSHOT_API_KEY."
         )
 
-    # 创建翻译服务
-    service = TranslationService(db, llm_service=llm_client)
+    # 创建翻译服务（使用 config 中的 provider）
+    service = TranslationService(db, provider="moonshot")
 
-    # 执行批量翻译
+    # force=true 时先删除已有翻译
+    if request.force:
+        service.delete_translations_for_episode(episode_id, language_code=request.language_code)
+
+    # 执行批量翻译（batch_translate 返回成功翻译数量）
     try:
-        result = service.batch_translate(
+        completed = service.batch_translate(
             episode_id,
-            language_code=request.language_code,
-            force=request.force
+            language_code=request.language_code
         )
+
+        # 获取 episode 总 cue 数用于响应
+        total = db.query(TranscriptCue).join(
+            AudioSegment, TranscriptCue.segment_id == AudioSegment.id
+        ).filter(AudioSegment.episode_id == episode_id).count()
 
         return BatchTranslateResponse(
             episode_id=episode_id,
             language_code=request.language_code,
-            total=result.total,
-            completed=result.completed,
-            skipped=result.skipped,
-            failed=result.failed,
+            total=total,
+            completed=completed,
+            skipped=0,
+            failed=0,
         )
     except Exception as e:
         db.rollback()
