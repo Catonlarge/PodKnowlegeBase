@@ -12,6 +12,7 @@ Migrated to use StructuredLLM with Pydantic validation and retry logic.
 """
 import json
 import logging
+from difflib import SequenceMatcher
 import random
 import time
 from dataclasses import dataclass
@@ -29,7 +30,9 @@ from app.config import (
     ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_MODEL,
     GEMINI_API_KEY, GEMINI_MODEL,
     MOONSHOT_TIMEOUT, ZHIPU_TIMEOUT, GEMINI_TIMEOUT,
-    AI_TEMPERATURE_TRANSLATION
+    AI_TEMPERATURE_TRANSLATION,
+    TRANSLATION_BATCH_DELAY,
+    TRANSLATION_LLM_TIMEOUT
 )
 from app.services.ai.structured_llm import StructuredLLM
 from app.services.ai.schemas.translation_schema import TranslationResponse
@@ -88,13 +91,17 @@ class TranslationService:
 
     # 批次降级 + 重试配置（按降级顺序）
     # 设计原则：大批次多重试，小批次少重试
+    # 首批 50 条降低 LLM 输出截断风险；避免 Moonshot RPM 限流
     BATCH_DEGRADATION_CONFIG = [
-        BatchRetryConfig(batch_size=100, max_retries=2),
         BatchRetryConfig(batch_size=50, max_retries=2),
-        BatchRetryConfig(batch_size=25, max_retries=1),
+        BatchRetryConfig(batch_size=25, max_retries=2),
+        BatchRetryConfig(batch_size=15, max_retries=1),
         BatchRetryConfig(batch_size=10, max_retries=1),
     ]
     MIN_BATCH_SIZE = 10
+    # 收集器：失败项凑够此数量送翻，不足则直接送
+    COLLECTOR_BATCH_SIZE = 50
+    MAX_COLLECTOR_ROUNDS = 5
 
     def __init__(
         self,
@@ -123,7 +130,7 @@ class TranslationService:
                 api_key = MOONSHOT_API_KEY
                 base_url = base_url or MOONSHOT_BASE_URL
                 model = model or MOONSHOT_MODEL
-                timeout = MOONSHOT_TIMEOUT
+                timeout = TRANSLATION_LLM_TIMEOUT  # Batch translation needs longer than default
             elif provider == "zhipu":
                 api_key = ZHIPU_API_KEY
                 base_url = base_url or ZHIPU_BASE_URL
@@ -136,7 +143,7 @@ class TranslationService:
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
         else:
-            timeout = MOONSHOT_TIMEOUT if provider == "moonshot" else (
+            timeout = TRANSLATION_LLM_TIMEOUT if provider == "moonshot" else (
                 ZHIPU_TIMEOUT if provider == "zhipu" else GEMINI_TIMEOUT
             )
 
@@ -171,10 +178,12 @@ class TranslationService:
         Returns:
             int: 成功翻译的 Cue 数量
         """
+        logger.info(f"[DEBUG] batch_translate ENTRY: episode_id={episode_id}, language_code={language_code}")
         logger.info(f"开始批量翻译: episode_id={episode_id}, language_code={language_code}")
 
         # 获取待翻译的 Cue 列表（断点续传）
         pending_cues = self._get_pending_cues(episode_id, language_code)
+        logger.info(f"[DEBUG] _get_pending_cues returned: {len(pending_cues)} cues")
 
         if not pending_cues:
             logger.info(f"没有待翻译的 Cue: episode_id={episode_id}, language_code={language_code}")
@@ -212,47 +221,72 @@ class TranslationService:
         total_cues = len(cues)
         success_count = 0
         current_config_index = 0  # 当前使用的配置索引
+        collector: List[TranscriptCue] = []  # 校验失败的 cue 收集器，凑批后滚动重试
+
+        logger.info(f"[DEBUG] _batch_translate_with_degradation ENTRY: total_cues={total_cues}")
 
         # 遍历所有 Cue，按当前批次大小处理
         i = 0
+        batch_num = 0
         while i < total_cues:
+            batch_num += 1
             # 确定当前批次大小
             config = self.BATCH_DEGRADATION_CONFIG[current_config_index]
             batch_size = min(config.batch_size, total_cues - i)
             batch = cues[i:i + batch_size]
 
             logger.info(
+                f"[DEBUG] 批次 #{batch_num}: Cue {i+1}-{i+batch_size}/{total_cues}, "
+                f"batch_size={batch_size}, config_index={current_config_index}"
+            )
+            logger.info(
                 f"处理批次: Cue {i+1}-{i+batch_size}/{total_cues} "
                 f"(batch_size={batch_size}, max_retries={config.max_retries})"
             )
 
             # 尝试翻译当前批次（带重试）
+            logger.info(f"[DEBUG] 批次 #{batch_num}: 调用 _try_translate_batch_with_retry 前")
             success, saved_count, failed_cues = self._try_translate_batch_with_retry(
                 batch, language_code, config
             )
+            logger.info(f"[DEBUG] 批次 #{batch_num}: _try_translate_batch_with_retry 返回 success={success}, saved_count={saved_count}, failed={len(failed_cues)}")
 
-            if success:
-                # 批次成功，继续下一批
-                success_count += saved_count
-                i += batch_size
-            else:
-                # 批次失败，尝试降级
-                if current_config_index < len(self.BATCH_DEGRADATION_CONFIG) - 1:
-                    # 降级到下一个配置
-                    current_config_index += 1
-                    new_config = self.BATCH_DEGRADATION_CONFIG[current_config_index]
-                    logger.warning(
-                        f"批次 {batch_size} 失败，降级到 {new_config.batch_size} "
-                        f"(max_retries={new_config.max_retries})"
-                    )
-                else:
-                    # 已到最后一级，回退到批次重试（50条/批，5轮）
-                    logger.warning("所有批次大小都失败，回退到批次重试（50条/批，5轮）")
-                    # 移除 rollback()，依赖 _create_translation 的 UPDATE 逻辑
-                    # 重复调用不会创建重复记录，重试时会更新已保存的记录
-                    fallback_count = self._fallback_translate_one_by_one(batch, language_code)
-                    success_count += fallback_count
-                    i += batch_size
+            # 通过的保存，失败的收集供后续滚动重试
+            success_count += saved_count
+            collector.extend(failed_cues)
+            i += batch_size
+
+            # 批次间延迟，避免 Moonshot API 速率限制 (RPM)
+            if i < total_cues and TRANSLATION_BATCH_DELAY > 0:
+                logger.info(f"等待 {TRANSLATION_BATCH_DELAY} 秒后处理下一批...")
+                time.sleep(TRANSLATION_BATCH_DELAY)
+
+        # 收集器滚动重试：凑够 COLLECTOR_BATCH_SIZE 送翻，不足则直接送
+        config = self.BATCH_DEGRADATION_CONFIG[0]
+        for round_num in range(self.MAX_COLLECTOR_ROUNDS):
+            if not collector:
+                break
+            logger.info(
+                f"收集器第 {round_num + 1} 轮: 待重试 {len(collector)} 条"
+            )
+            batch = collector[:self.COLLECTOR_BATCH_SIZE]
+            collector = collector[self.COLLECTOR_BATCH_SIZE:]
+            success, saved_count, failed_cues = self._try_translate_batch_with_retry(
+                batch, language_code, config
+            )
+            success_count += saved_count
+            collector.extend(failed_cues)
+            if TRANSLATION_BATCH_DELAY > 0 and collector:
+                time.sleep(TRANSLATION_BATCH_DELAY)
+
+        # 收集器多轮后仍有失败，尝试逐条兜底（兜底内部会为仍失败的入库 failed）
+        if collector:
+            logger.warning(
+                f"收集器 {self.MAX_COLLECTOR_ROUNDS} 轮后仍有 {len(collector)} 条失败，"
+                f"尝试逐条兜底"
+            )
+            fallback_count = self._fallback_translate_one_by_one(collector, language_code)
+            success_count += fallback_count
 
         return success_count
 
@@ -296,11 +330,13 @@ class TranslationService:
                 )
 
                 # 调用 AI 批量翻译
+                logger.info(f"[DEBUG] _try_translate_batch_with_retry: 调用 _call_ai_for_batch 前 (attempt={attempt + 1})")
                 result = self._call_ai_for_batch(failed_batch, language_code)
-                translations = result["translations"]
+                valid_translations = result["translations"]
+                failed_cue_ids = result.get("failed_cue_ids", [])
 
-                # 保存翻译结果
-                for trans in translations:
+                # 保存通过的翻译
+                for trans in valid_translations:
                     self._create_translation(
                         trans["cue_id"],
                         language_code,
@@ -309,13 +345,17 @@ class TranslationService:
                     successful_ids.add(trans["cue_id"])
                     saved_count += 1
 
-                # 成功
-                if attempt > 0:
+                # 构建失败列表供收集器
+                cue_id_to_cue = {c.id: c for c in batch}
+                failed_cues = [cue_id_to_cue[cid] for cid in failed_cue_ids if cid in cue_id_to_cue]
+
+                if attempt > 0 and not failed_cues:
                     logger.info(
                         f"批次 {config.batch_size} 在第 {attempt + 1} 次尝试成功"
                     )
 
-                return True, saved_count, []
+                # 有通过的即视为成功，失败的收集供后续滚动重试
+                return True, saved_count, failed_cues
 
             except ValueError as e:
                 # JSON 验证失败
@@ -446,6 +486,19 @@ class TranslationService:
 
         logger.info(f"待翻译 Cue 数量: {len(pending_cues)}/{len(cues)}")
         return pending_cues
+
+    def get_pending_count(self, episode_id: int, language_code: str = "zh") -> int:
+        """
+        获取待翻译的 Cue 数量（用于判断是否可跳过翻译步骤）
+
+        Args:
+            episode_id: Episode ID
+            language_code: 语言代码
+
+        Returns:
+            int: 待翻译数量，0 表示已全部完成
+        """
+        return len(self._get_pending_cues(episode_id, language_code))
 
     def delete_translations_for_episode(
         self,
@@ -639,7 +692,7 @@ class TranslationService:
             translation=None,  # NULL
             is_edited=False,
             translation_status=TranslationStatus.FAILED.value,
-            translation_error=f"AI 翻译失败，已重试5轮",
+            translation_error=f"AI 翻译失败，收集器已重试{self.MAX_COLLECTOR_ROUNDS}轮",
             translation_retry_count=5,
             translation_started_at=datetime.now()
         )
@@ -943,7 +996,8 @@ class TranslationService:
 1. 保持原意准确
 2. 符合目标语言表达习惯
 3. 必须为每一条字幕提供翻译
-4. cue_id 和 original_text 必须与输入完全一致
+4. cue_id 必须与输入完全一致
+5. original_text 必须**逐字复制**输入的 text 字段，不得做任何修改、纠错或改写（包括标点、缩写、大小写）
 
 **输入字幕**：
 ```json
@@ -965,6 +1019,8 @@ class TranslationService:
 
 注意：必须返回完整的 JSON 对象，包含所有 {len(cues)} 条字幕的翻译。"""
 
+        prompt_char_count = len(user_prompt)
+        logger.info(f"[DEBUG] _call_ai_for_batch ENTRY: cues={len(cues)}, prompt_chars={prompt_char_count}")
         logger.info(f"调用 AI 批量翻译 {len(cues)} 条字幕...")
 
         try:
@@ -981,20 +1037,27 @@ class TranslationService:
 
             from app.services.ai.retry import ai_retry
 
-            @ai_retry(max_retries=2, initial_delay=1.0)
+            @ai_retry(max_retries=3, initial_delay=2.0, backoff_factor=2.0)
             def call_llm_with_retry():
                 return structured_llm.invoke(messages)
 
+            logger.info(f"[DEBUG] _call_ai_for_batch: 即将调用 structured_llm.invoke (provider={self.provider}, timeout 见 config)")
             start_time = time.time()
             result: TranslationResponse = call_llm_with_retry()
             elapsed_time = time.time() - start_time
 
+            logger.info(f"[DEBUG] _call_ai_for_batch: invoke 返回，耗时 {elapsed_time:.1f}s")
             logger.info(f"  AI 响应完成，耗时 {elapsed_time:.1f} 秒")
 
-            # 业务验证：确保所有 cue_id 有效且完整
-            translations = self._validate_translation_response(result, valid_cue_ids, cues)
+            # 业务验证：支持部分接受，未通过的收集供重试
+            translations, failed_cue_ids = self._validate_translation_response(
+                result, valid_cue_ids, cues
+            )
 
-            return {"translations": translations}
+            return {
+                "translations": translations,
+                "failed_cue_ids": failed_cue_ids,
+            }
 
         except Exception as e:
             logger.error(f"AI 批量翻译调用失败: {e}")
@@ -1007,9 +1070,11 @@ class TranslationService:
         response: TranslationResponse,
         valid_cue_ids: set,
         cues: List[TranscriptCue]
-    ) -> List[Dict]:
+    ) -> Tuple[List[Dict], List[int]]:
         """
-        验证 TranslationResponse 并转换为字典格式
+        验证 TranslationResponse 并转换为字典格式，支持部分接受。
+
+        校验通过的翻译返回，校验失败的 cue_id 收集供重试。
 
         Args:
             response: TranslationResponse Pydantic 模型
@@ -1017,12 +1082,10 @@ class TranslationService:
             cues: 原始 Cue 列表
 
         Returns:
-            List[Dict]: 转换后的翻译列表
-
-        Raises:
-            ValueError: 验证失败
+            Tuple[List[Dict], List[int]]: (通过的翻译列表, 失败的 cue_id 列表)
         """
         translations = []
+        failed_cue_ids: List[int] = []
 
         # 构建原始 cue 文本映射
         cue_text_map = {cue.id: cue.text for cue in cues}
@@ -1040,7 +1103,8 @@ class TranslationService:
         for item in response.translations:
             # 验证 cue_id 在有效范围内
             if item.cue_id not in valid_cue_ids:
-                raise ValueError(f"无效的 cue_id: {item.cue_id}")
+                failed_cue_ids.append(item.cue_id)
+                continue
 
             # 验证 original_text 与原始文本匹配
             original_text = cue_text_map.get(item.cue_id, "")
@@ -1079,10 +1143,8 @@ class TranslationService:
 
                         # 边界处理: 检查是否与已添加的 cue_id 重复（双重错位检测）
                         if any(t["cue_id"] == correct_cue_id for t in translations):
-                            raise ValueError(
-                                f"修复错位时发现重复 cue_id={correct_cue_id}，"
-                                f"可能存在双重错位，拒绝整个批次"
-                            )
+                            failed_cue_ids.append(item.cue_id)
+                            continue
 
                         # 修复：保存到正确的 cue_id
                         translations.append({
@@ -1091,29 +1153,35 @@ class TranslationService:
                         })
                         continue
 
-                # 无法找到匹配 - 这可能是 LLM 错误，拒绝此翻译
-                # 计算文本相似度，如果是轻微差异（如标点、空格），可以接受
+                # 无法找到匹配 - 尝试相似度阈值接受轻微改写
                 original_lower = original_text.lower().strip()
                 item_lower = item.original_text.lower().strip()
 
-                # 检查是否是子串关系（允许 80% 相似度）
-                is_substring = False
-                if len(item_lower) > 0 and len(original_lower) > 0:
-                    if item_lower in original_lower or original_lower in item_lower:
-                        similarity = max(len(item_lower), len(original_lower)) / min(len(item_lower), len(original_lower))
-                        if similarity <= 1.25:  # 长度差异小于 25%
-                            is_substring = True
-
-                if is_substring:
-                    # 轻微差异，接受 LLM 的映射
-                    logger.debug(f"  original_text 有轻微差异但可接受，使用 LLM 返回的 cue_id={item.cue_id}")
-                else:
-                    # 严重不匹配，拒绝
-                    raise ValueError(
-                        f"cue_id {item.cue_id} 的 original_text 严重不匹配且无法找到正确的映射！\n"
-                        f"  期望: '{original_text[:100]}...'\n"
-                        f"  实际: '{item.original_text[:100]}...'"
+                ratio = SequenceMatcher(None, original_lower, item_lower).ratio()
+                if ratio >= 0.95:
+                    logger.warning(
+                        f"original_text 轻微差异已接受 (相似度 {ratio:.2f}): cue_id={item.cue_id}\n"
+                        f"  期望: '{original_text[:60]}...'\n"
+                        f"  实际: '{item.original_text[:60]}...'"
                     )
+                else:
+                    # 检查是否是子串关系（允许 80% 相似度）
+                    is_substring = False
+                    if len(item_lower) > 0 and len(original_lower) > 0:
+                        if item_lower in original_lower or original_lower in item_lower:
+                            similarity = max(len(item_lower), len(original_lower)) / min(len(item_lower), len(original_lower))
+                            if similarity <= 1.25:  # 长度差异小于 25%
+                                is_substring = True
+
+                    if is_substring:
+                        logger.debug(f"  original_text 有轻微差异但可接受，使用 LLM 返回的 cue_id={item.cue_id}")
+                    else:
+                        # 严重不匹配，收集供重试，不拒绝整批
+                        logger.warning(
+                            f"cue_id {item.cue_id} original_text 不匹配，收集供重试"
+                        )
+                        failed_cue_ids.append(item.cue_id)
+                        continue
 
             translations.append({
                 "cue_id": item.cue_id,
@@ -1127,10 +1195,12 @@ class TranslationService:
                 f"处理 {duplicate_text_count} 处重复文本"
             )
 
-        # 验证完整性：所有 cue_id 都有翻译
+        # 未通过校验的 cue_id 加入 failed，供收集器重试
         returned_ids = {t["cue_id"] for t in translations}
         missing_ids = valid_cue_ids - returned_ids
-        if missing_ids:
-            raise ValueError(f"缺少 {len(missing_ids)} 条翻译: cue_ids {missing_ids}")
+        failed_cue_ids.extend(missing_ids)
 
-        return translations
+        if failed_cue_ids:
+            logger.info(f"验证部分通过: {len(translations)} 条已接受, {len(failed_cue_ids)} 条收集供重试")
+
+        return translations, failed_cue_ids

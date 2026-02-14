@@ -56,6 +56,7 @@ def ai_retry(
 
             for attempt in range(max_retries):
                 try:
+                    logger.info(f"[DEBUG] ai_retry: {func.__name__} 第 {attempt + 1}/{max_retries} 次尝试")
                     return func(*args, **kwargs)
                 except retry_on as e:
                     last_exception = e
@@ -65,6 +66,7 @@ def ai_retry(
                             f"{func.__name__} 失败 (尝试 {attempt + 1}/{max_retries}): {e}, "
                             f"{delay:.1f}秒后重试..."
                         )
+                        logger.info(f"[DEBUG] ai_retry: 等待 {delay}s 后重试...")
                         time.sleep(delay)
                         delay *= backoff_factor
                     else:

@@ -147,6 +147,11 @@ AI_TEMPERATURE_PROOFREADING = get_config("ai.temperature.proofreading", 0)
 AI_TEMPERATURE_TRANSLATION = get_config("ai.temperature.translation", 0.3)
 AI_TEMPERATURE_MARKETING = get_config("ai.temperature.marketing", 0.8)
 
+# Translation batch delay (seconds between batches, avoid Moonshot rate limit)
+TRANSLATION_BATCH_DELAY = get_config("ai.translation.batch_delay_seconds", 5)
+# Translation LLM timeout (batch of 50 cues may exceed default 120s)
+TRANSLATION_LLM_TIMEOUT = get_config("ai.translation.llm_timeout_seconds", 300)
+
 # ==================== Download Configuration (yt-dlp) ====================
 # Use browser cookies when YouTube blocks with "Sign in to confirm you're not a bot"
 # Override with env YT_DLP_COOKIES_FROM_BROWSER (e.g., chrome, firefox)

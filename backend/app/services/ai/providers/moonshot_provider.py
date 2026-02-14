@@ -4,12 +4,15 @@ Moonshot (Kimi) Provider Adapter
 This module implements the adapter for Moonshot Kimi API.
 Kimi supports JSON mode via response_format parameter but not native structured output.
 """
+import logging
 from typing import Type
 from pydantic import BaseModel
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage
 
 from .base_provider import BaseProviderAdapter, T
+
+logger = logging.getLogger(__name__)
 
 
 class MoonshotProviderAdapter(BaseProviderAdapter):
@@ -26,12 +29,14 @@ class MoonshotProviderAdapter(BaseProviderAdapter):
 
     def _initialize_client(self, **kwargs):
         """Initialize Kimi (Moonshot) OpenAI-compatible client."""
+        timeout_sec = kwargs.get("timeout", 120)
+        logger.info(f"[DEBUG] MoonshotProviderAdapter: timeout={timeout_sec}s, model={self.model}")
         self.client = ChatOpenAI(
             model=self.model,
             base_url=kwargs.get("base_url"),
             api_key=kwargs.get("api_key"),
             temperature=kwargs.get("temperature", 0.7),
-            timeout=kwargs.get("timeout", 120),  # Default 120 seconds
+            timeout=timeout_sec,
             max_tokens=kwargs.get("max_tokens", 32000),  # High limit for long subtitles
         )
 
@@ -55,15 +60,18 @@ class MoonshotProviderAdapter(BaseProviderAdapter):
             ValueError: If API call fails or validation fails
         """
         try:
+            logger.info(f"[DEBUG] MoonshotProviderAdapter.create_completion: 调用 client.invoke 前")
             # Use response_format to force JSON output
             response = self.client.invoke(
                 messages,
                 response_format={"type": "json_object"},
                 **kwargs
             )
+            logger.info(f"[DEBUG] MoonshotProviderAdapter.create_completion: client.invoke 返回")
 
             # Validate with Pydantic
             return self.validate_response(response.content, schema)
 
         except Exception as e:
+            logger.error(f"[DEBUG] MoonshotProviderAdapter.create_completion 异常: {e}")
             raise ValueError(f"Moonshot API call failed: {e}") from e

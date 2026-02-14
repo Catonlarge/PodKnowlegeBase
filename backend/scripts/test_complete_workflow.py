@@ -285,13 +285,20 @@ class CompleteWorkflowTester:
         ).count()
 
         # 检查状态（force_resegment / resume_segment 时跳过检查，强制执行）
+        # 有章节即跳过：避免翻译失败回滚后，下次重复执行切分
         should_skip = (
             not force_resegment
             and not resume_segment
-            and self.episode.workflow_status >= WorkflowStatus.SEGMENTED.value
+            and (
+                self.episode.workflow_status >= WorkflowStatus.SEGMENTED.value
+                or chapters_count > 0
+            )
         )
         if should_skip:
-            self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
+            if chapters_count > 0 and self.episode.workflow_status < WorkflowStatus.SEGMENTED.value:
+                self.console.print("[yellow]已跳过: 已有章节数据[/yellow]")
+            else:
+                self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
             chapters = self.db.query(Chapter).filter(
                 Chapter.episode_id == self.episode.id
             ).all()
@@ -329,8 +336,9 @@ class CompleteWorkflowTester:
 
         self.console.print(f"[green]切分完成: {len(chapters)} 个章节[/green]")
 
-        # 更新状态
+        # 更新状态并持久化，避免后续步骤失败时整事务回滚导致本章节数据丢失
         self.db.refresh(self.episode)
+        self.db.commit()
 
         # 显示章节预览
         self._display_chapter_preview(chapters)
@@ -352,14 +360,23 @@ class CompleteWorkflowTester:
         # 创建翻译服务（使用 config 中的 provider 配置）
         service = TranslationService(self.db, provider="moonshot")
 
+        # 检查是否无待翻译项（已全部完成则跳过，不反复触发）
+        pending_count = service.get_pending_count(self.episode.id, "zh")
+
         # 检查状态: force_retranslate 或 resume_translation 时强制执行
         should_skip = (
             not force_retranslate
             and not resume_translation
-            and self.episode.workflow_status >= WorkflowStatus.TRANSLATED.value
+            and (
+                self.episode.workflow_status >= WorkflowStatus.TRANSLATED.value
+                or pending_count == 0
+            )
         )
         if should_skip:
-            self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
+            if pending_count == 0:
+                self.console.print("[yellow]已跳过: 翻译已全部完成[/yellow]")
+            else:
+                self.console.print(f"[yellow]已跳过: 当前状态 {WorkflowStatus(self.episode.workflow_status).name}[/yellow]")
             return
 
         if resume_translation:
@@ -378,8 +395,9 @@ class CompleteWorkflowTester:
 
         self.console.print(f"[green]翻译完成: {count} 条[/green]")
 
-        # 更新状态
+        # 更新状态并持久化，避免后续步骤失败时整事务回滚导致本步骤数据丢失
         self.db.refresh(self.episode)
+        self.db.commit()
 
         # 显示翻译预览
         self._display_translation_preview()
